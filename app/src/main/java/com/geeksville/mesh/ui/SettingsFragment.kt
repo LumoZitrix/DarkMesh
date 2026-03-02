@@ -34,6 +34,7 @@ import android.widget.RadioButton
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
+import androidx.core.content.edit
 import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.asLiveData
@@ -43,9 +44,11 @@ import com.geeksville.mesh.android.GeeksvilleApplication
 import com.geeksville.mesh.android.Logging
 import com.geeksville.mesh.android.getBluetoothPermissions
 import com.geeksville.mesh.android.getLocationPermissions
+import com.geeksville.mesh.android.getNotificationPermissions
 import com.geeksville.mesh.android.gpsDisabled
 import com.geeksville.mesh.android.hasGps
 import com.geeksville.mesh.android.hasLocationPermission
+import com.geeksville.mesh.android.hasNotificationPermission
 import com.geeksville.mesh.android.hideKeyboard
 import com.geeksville.mesh.android.isGooglePlayAvailable
 import com.geeksville.mesh.android.permissionMissing
@@ -57,12 +60,19 @@ import com.geeksville.mesh.model.RegionInfo
 import com.geeksville.mesh.model.UIViewModel
 import com.geeksville.mesh.model.UIViewModel.Companion.getPreferences
 import com.geeksville.mesh.repository.location.LocationRepository
+import com.geeksville.mesh.service.DEFAULT_BATTERY_ALERT_PERCENT_THRESHOLD
+import com.geeksville.mesh.service.DEFAULT_BATTERY_ALERT_VOLTAGE_THRESHOLD
+import com.geeksville.mesh.service.MAX_BATTERY_ALERT_VOLTAGE_THRESHOLD
 import com.geeksville.mesh.service.DistressService.PREF_STRESSTEST_ENABLED
 import com.geeksville.mesh.service.MeshService
+import com.geeksville.mesh.service.PREF_BATTERY_ALERTS_ENABLED
+import com.geeksville.mesh.service.PREF_BATTERY_ALERT_PERCENT_THRESHOLD
+import com.geeksville.mesh.service.PREF_BATTERY_ALERT_VOLTAGE_THRESHOLD
 import com.geeksville.mesh.util.exceptionToSnackbar
 import com.geeksville.mesh.util.onEditorAction
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dagger.hilt.android.AndroidEntryPoint
+import java.util.Locale
 import org.meshtastic.proto.ConfigProtos
 import javax.inject.Inject
 
@@ -81,6 +91,7 @@ class SettingsFragment : ScreenFragment("Settings"), Logging {
     internal lateinit var locationRepository: LocationRepository
 
     private val hasGps by lazy { requireContext().hasGps() }
+    private var updatingBatteryAlertUi = false
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -164,7 +175,30 @@ class SettingsFragment : ScreenFragment("Settings"), Logging {
 
     private val regions = RegionInfo.entries
 
+    private fun updateBatteryAlertInputs(enabled: Boolean) {
+        binding.batteryAlertPercentThresholdLayout.isEnabled = enabled
+        binding.batteryAlertPercentThresholdEditText.isEnabled = enabled
+        binding.batteryAlertVoltageThresholdLayout.isEnabled = enabled
+        binding.batteryAlertVoltageThresholdEditText.isEnabled = enabled
+    }
+
+    private fun setBatteryAlertsEnabled(enabled: Boolean) {
+        getPreferences(requireContext()).edit { putBoolean(PREF_BATTERY_ALERTS_ENABLED, enabled) }
+        updatingBatteryAlertUi = true
+        binding.batteryAlertsCheckbox.isChecked = enabled
+        updatingBatteryAlertUi = false
+        updateBatteryAlertInputs(enabled)
+    }
+
+    private fun formatBatteryAlertVoltageThreshold(value: Float): String =
+        if (value == 0f) {
+            "0"
+        } else {
+            String.format(Locale.getDefault(), "%.2f", value)
+        }
+
     private fun initCommonUI() {
+        val preferences = getPreferences(requireContext())
 
         val requestLocationPermissionLauncher =
             registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
@@ -176,6 +210,15 @@ class SettingsFragment : ScreenFragment("Settings"), Logging {
                     model.showSnackbar(getString(R.string.why_background_required))
                 }
                 bluetoothViewModel.permissionsUpdated()
+            }
+        val requestNotificationPermissionLauncher =
+            registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+                if (permissions.entries.all { it.value }) {
+                    setBatteryAlertsEnabled(true)
+                } else {
+                    setBatteryAlertsEnabled(false)
+                    model.showSnackbar(getString(R.string.notification_denied))
+                }
             }
 
         // init our region spinner
@@ -303,6 +346,64 @@ class SettingsFragment : ScreenFragment("Settings"), Logging {
             } else {
                 model.meshService?.stopProvideLocation()
             }
+        }
+
+        updatingBatteryAlertUi = true
+        binding.batteryAlertsCheckbox.isChecked =
+            preferences.getBoolean(PREF_BATTERY_ALERTS_ENABLED, false)
+        binding.batteryAlertPercentThresholdEditText.setText(
+            preferences.getInt(
+                PREF_BATTERY_ALERT_PERCENT_THRESHOLD,
+                DEFAULT_BATTERY_ALERT_PERCENT_THRESHOLD
+            ).toString()
+        )
+        binding.batteryAlertVoltageThresholdEditText.setText(
+            formatBatteryAlertVoltageThreshold(
+                preferences.getFloat(
+                    PREF_BATTERY_ALERT_VOLTAGE_THRESHOLD,
+                    DEFAULT_BATTERY_ALERT_VOLTAGE_THRESHOLD
+                )
+            )
+        )
+        updatingBatteryAlertUi = false
+        updateBatteryAlertInputs(binding.batteryAlertsCheckbox.isChecked)
+
+        binding.batteryAlertsCheckbox.setOnCheckedChangeListener { view, isChecked ->
+            if (updatingBatteryAlertUi) return@setOnCheckedChangeListener
+
+            if (view.isPressed && isChecked && !requireContext().hasNotificationPermission()) {
+                updatingBatteryAlertUi = true
+                view.isChecked = false
+                updatingBatteryAlertUi = false
+
+                val notificationPermissions = requireContext().getNotificationPermissions()
+                requireContext().rationaleDialog(
+                    shouldShowRequestPermissionRationale(notificationPermissions),
+                    R.string.notification_required,
+                    getString(R.string.why_notification_required),
+                ) {
+                    requestNotificationPermissionLauncher.launch(notificationPermissions)
+                }
+                return@setOnCheckedChangeListener
+            }
+
+            preferences.edit { putBoolean(PREF_BATTERY_ALERTS_ENABLED, isChecked) }
+            updateBatteryAlertInputs(isChecked)
+        }
+
+        binding.batteryAlertPercentThresholdEditText.doAfterTextChanged { text ->
+            if (updatingBatteryAlertUi) return@doAfterTextChanged
+
+            val threshold = text?.toString()?.trim()?.toIntOrNull()?.coerceIn(0, 100) ?: 0
+            preferences.edit { putInt(PREF_BATTERY_ALERT_PERCENT_THRESHOLD, threshold) }
+        }
+
+        binding.batteryAlertVoltageThresholdEditText.doAfterTextChanged { text ->
+            if (updatingBatteryAlertUi) return@doAfterTextChanged
+
+            val threshold = text?.toString()?.trim()?.toFloatOrNull()
+                ?.coerceIn(0f, MAX_BATTERY_ALERT_VOLTAGE_THRESHOLD) ?: 0f
+            preferences.edit { putFloat(PREF_BATTERY_ALERT_VOLTAGE_THRESHOLD, threshold) }
         }
 
         val app = (requireContext().applicationContext as GeeksvilleApplication)
