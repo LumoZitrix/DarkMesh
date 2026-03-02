@@ -112,7 +112,7 @@
             android:layout_height="wrap_content"
             android:layout_marginStart="16dp"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@+id/provideLocationCheckbox">
+            app:layout_constraintTop_toBottomOf="@+id/batteryAlertsSection">
 
             <RadioButton
                 android:id="@+id/radioButton2"
@@ -163,6 +163,80 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@+id/scanStatusText"
             tools:ignore="HardcodedText" />
+
+        <LinearLayout
+            android:id="@+id/batteryAlertsSection"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="16dp"
+            android:orientation="vertical"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@+id/provideLocationCheckbox">
+
+            <com.google.android.material.textview.MaterialTextView
+                android:id="@+id/batteryAlertsTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/battery_alerts"
+                android:textStyle="bold" />
+
+            <com.google.android.material.textview.MaterialTextView
+                android:id="@+id/batteryAlertsSummary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/battery_alerts_summary" />
+
+            <CheckBox
+                android:id="@+id/batteryAlertsCheckbox"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/battery_alerts_enable" />
+
+            <LinearLayout
+                android:id="@+id/batteryAlertThresholdRow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/batteryAlertPercentThresholdLayout"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:layout_weight="1"
+                    android:hint="@string/battery_alert_percent_threshold">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/batteryAlertPercentThresholdEditText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:importantForAutofill="no"
+                        android:inputType="number"
+                        android:singleLine="true" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/batteryAlertVoltageThresholdLayout"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="@string/battery_alert_voltage_threshold">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/batteryAlertVoltageThresholdEditText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:importantForAutofill="no"
+                        android:inputType="numberDecimal"
+                        android:singleLine="true" />
+                </com.google.android.material.textfield.TextInputLayout>
+            </LinearLayout>
+        </LinearLayout>
 
         <com.google.android.material.textview.MaterialTextView
             android:id="@+id/warningNotPaired"

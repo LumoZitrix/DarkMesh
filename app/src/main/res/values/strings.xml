@@ -146,6 +146,8 @@
     <string name="message_reception_state">message reception state</string>
     <string name="message_delivery_status">Message delivery status</string>
     <string name="meshtastic_messages_notifications">Message notifications</string>
+    <string name="battery_alert_notifications">Battery alerts</string>
+    <string name="battery_alert_critical_notifications">Critical battery alerts</string>
     <string name="protocol_stress_test">Protocol stress test</string>
     <string name="firmware_too_old">Firmware update required</string>
     <string name="firmware_old">The radio firmware is too old to talk to this application. For more information on this see <a href="https://meshtastic.org/docs/getting-started/flashing-firmware">our Firmware Installation guide</a>.</string>
@@ -263,6 +265,17 @@
     <string name="wifi_qr_code_error">Invalid WiFi Credential QR code format</string>
     <string name="navigate_back">Navigate Back</string>
     <string name="battery">Battery</string>
+    <string name="battery_alerts">Battery Alerts</string>
+    <string name="battery_alerts_summary">Notify when a node reports battery metrics below either threshold. Set a threshold to 0 to disable that trigger.</string>
+    <string name="battery_alerts_enable">Enable low battery notifications</string>
+    <string name="battery_alert_percent_threshold">Battery level threshold (%)</string>
+    <string name="battery_alert_voltage_threshold">Voltage threshold (V)</string>
+    <string name="battery_alert_low_title">Low battery: %1$s</string>
+    <string name="battery_alert_critical_title">Critical battery: %1$s</string>
+    <string name="battery_alert_percent_and_voltage">%1$s is at %2$d%% (%3$.2fV).</string>
+    <string name="battery_alert_percent_only">%1$s is at %2$d%%.</string>
+    <string name="battery_alert_voltage_only">%1$s is at %2$.2fV.</string>
+    <string name="battery_alert_unknown_node">This node</string>
     <string name="channel_utilization">Channel Utilization</string>
     <string name="air_utilization">Air Utilization</string>
     <string name="temperature">Temperature</string>

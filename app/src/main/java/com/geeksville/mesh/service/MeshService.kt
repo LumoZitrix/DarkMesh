@@ -48,6 +48,7 @@ import com.geeksville.mesh.android.GeeksvilleApplication
 import com.geeksville.mesh.android.Logging
 import com.geeksville.mesh.android.advancedPrefs
 import com.geeksville.mesh.android.hasLocationPermission
+import com.geeksville.mesh.android.hasNotificationPermission
 import com.geeksville.mesh.android.mainLooperToast
 import com.geeksville.mesh.concurrent.handledLaunch
 import com.geeksville.mesh.database.DbImportState
@@ -249,12 +250,20 @@ class MeshService : Service(), Logging {
     private val serviceBroadcasts = MeshServiceBroadcasts(this, clientPackages) {
         connectionState.also { radioConfigRepository.setConnectionState(it) }
     }
+    private val uiPrefs by lazy { getPreferences(this) }
     private val serviceJob = Job()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     var connectionState = ConnectionState.DISCONNECTED
 
     private var locationFlow: Job? = null
     private var mqttMessageFlow: Job? = null
+    private val lowBatteryAlertLevels = ConcurrentHashMap<Int, BatteryAlertLevel>()
+    private val batteryAlertPrefsListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key in BATTERY_ALERT_PREFERENCE_KEYS) {
+                clearLowBatteryAlertState()
+            }
+        }
 
     private fun getSenderName(packet: DataPacket?): String {
         val name = nodeDBbyID[packet?.from]?.user?.longName
@@ -419,6 +428,7 @@ class MeshService : Service(), Logging {
 
         info("Creating mesh service")
         huntingPrefs = getSharedPreferences(UserPrefs.Hunting.SHARED_HUNT_PREFS, MODE_PRIVATE)
+        uiPrefs.registerOnSharedPreferenceChangeListener(batteryAlertPrefsListener)
 
         // Switch to the IO thread
         serviceScope.handledLaunch {
@@ -498,6 +508,8 @@ class MeshService : Service(), Logging {
 
         // Make sure we aren't using the notification first
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        uiPrefs.unregisterOnSharedPreferenceChangeListener(batteryAlertPrefsListener)
+        clearLowBatteryAlertState()
 
         super.onDestroy()
         serviceJob.cancel()
@@ -522,6 +534,12 @@ class MeshService : Service(), Logging {
         myNodeInfo = null
         nodeDBbyNodeNum.clear()
         haveNodeDB = false
+        clearLowBatteryAlertState()
+    }
+
+    private fun clearLowBatteryAlertState() {
+        lowBatteryAlertLevels.keys.forEach(serviceNotifications::cancelLowBatteryNotification)
+        lowBatteryAlertLevels.clear()
     }
 
     private var myNodeInfo: MyNodeEntity? = null
@@ -1170,6 +1188,47 @@ class MeshService : Service(), Logging {
                 t.hasDeviceMetrics() -> it.deviceTelemetry = t
                 t.hasEnvironmentMetrics() -> it.environmentTelemetry = t
                 t.hasPowerMetrics() -> it.powerTelemetry = t
+            }
+        }
+
+        if (t.hasDeviceMetrics()) {
+            maybeUpdateLowBatteryAlert(fromNum)
+        }
+    }
+
+    private fun maybeUpdateLowBatteryAlert(nodeNum: Int) {
+        val previousLevel = lowBatteryAlertLevels[nodeNum] ?: BatteryAlertLevel.NONE
+
+        if (!hasNotificationPermission()) {
+            if (previousLevel != BatteryAlertLevel.NONE) {
+                lowBatteryAlertLevels.remove(nodeNum)
+                serviceNotifications.cancelLowBatteryNotification(nodeNum)
+            }
+            return
+        }
+
+        val settings = uiPrefs.getBatteryAlertSettings()
+        val node = nodeDBbyNodeNum[nodeNum] ?: return
+        val nextLevel = BatteryAlertEvaluator.nextLevel(
+            previousLevel = previousLevel,
+            snapshot = node.deviceMetrics.toBatterySnapshot(),
+            settings = settings,
+        )
+
+        when (nextLevel) {
+            BatteryAlertLevel.NONE -> {
+                if (previousLevel != BatteryAlertLevel.NONE) {
+                    lowBatteryAlertLevels.remove(nodeNum)
+                    serviceNotifications.cancelLowBatteryNotification(nodeNum)
+                }
+            }
+
+            BatteryAlertLevel.LOW,
+            BatteryAlertLevel.CRITICAL -> {
+                lowBatteryAlertLevels[nodeNum] = nextLevel
+                if (nextLevel != previousLevel) {
+                    serviceNotifications.showLowBatteryNotification(node, nextLevel)
+                }
             }
         }
     }
