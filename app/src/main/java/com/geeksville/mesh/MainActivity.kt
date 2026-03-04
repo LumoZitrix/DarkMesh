@@ -104,6 +104,7 @@ import com.geeksville.mesh.service.MeshServiceNotifications
 import com.geeksville.mesh.service.PlanMsgService
 import com.geeksville.mesh.service.ServiceRepository
 import com.geeksville.mesh.service.startService
+import com.geeksville.mesh.ui.BatteryNotification
 import com.geeksville.mesh.ui.ChannelFragment
 import com.geeksville.mesh.ui.ContactsFragment
 import com.geeksville.mesh.ui.DebugFragment
@@ -1094,6 +1095,11 @@ class MainActivity : AppCompatActivity(), Logging {
 
             R.id.advanced_settings -> {
                 startActivity(Intent(this, AdvancedSettings::class.java))
+                return true
+            }
+
+            R.id.battery_alerts -> {
+                startActivity(Intent(this, BatteryNotification::class.java))
                 return true
             }
 

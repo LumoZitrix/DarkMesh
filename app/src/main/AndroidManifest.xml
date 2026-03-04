@@ -264,6 +264,9 @@
         <activity
             android:name="com.geeksville.mesh.AdvancedSettings"/>
 
+        <activity
+            android:name="com.geeksville.mesh.ui.BatteryNotification"/>
+
         <!-- allow for plugin discovery -->
         <activity
             android:name="com.atakmap.app.component"

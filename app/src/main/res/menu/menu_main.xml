@@ -118,6 +118,13 @@
         android:id="@+id/preferences_quick_chat"
         android:title="@string/quick_chat"
         app:showAsAction="withText" />
+
+    <item
+        android:id="@+id/battery_alerts"
+        android:title="Battery Alerts"
+        tools:ignore="HardcodedText"
+        app:showAsAction="withText" />
+
     <item
         android:id="@+id/about"
         android:title="@string/about"

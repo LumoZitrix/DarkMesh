@@ -17,11 +17,6 @@
 
 package com.geeksville.mesh.ui
 
-import android.app.Activity
-import android.content.Intent
-import android.content.SharedPreferences
-import android.media.RingtoneManager
-import android.net.Uri
 import android.net.InetAddresses
 import android.os.Build
 import android.os.Bundle
@@ -39,7 +34,6 @@ import android.widget.RadioButton
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
-import androidx.core.content.edit
 import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.asLiveData
@@ -49,56 +43,31 @@ import com.geeksville.mesh.android.GeeksvilleApplication
 import com.geeksville.mesh.android.Logging
 import com.geeksville.mesh.android.getBluetoothPermissions
 import com.geeksville.mesh.android.getLocationPermissions
-import com.geeksville.mesh.android.getNotificationPermissions
 import com.geeksville.mesh.android.gpsDisabled
 import com.geeksville.mesh.android.hasGps
 import com.geeksville.mesh.android.hasLocationPermission
-import com.geeksville.mesh.android.hasNotificationPermission
 import com.geeksville.mesh.android.hideKeyboard
 import com.geeksville.mesh.android.isGooglePlayAvailable
 import com.geeksville.mesh.android.permissionMissing
 import com.geeksville.mesh.android.rationaleDialog
 import com.geeksville.mesh.android.shouldShowRequestPermissionRationale
-import com.geeksville.mesh.service.BatteryAlertScope
 import com.geeksville.mesh.model.BTScanModel
 import com.geeksville.mesh.model.BluetoothViewModel
 import com.geeksville.mesh.model.RegionInfo
 import com.geeksville.mesh.model.UIViewModel
 import com.geeksville.mesh.model.UIViewModel.Companion.getPreferences
 import com.geeksville.mesh.repository.location.LocationRepository
-import com.geeksville.mesh.service.DEFAULT_BATTERY_ALERT_PERCENT_THRESHOLD
-import com.geeksville.mesh.service.DEFAULT_BATTERY_ALERT_VOLTAGE_THRESHOLD
-import com.geeksville.mesh.service.MAX_BATTERY_ALERT_VOLTAGE_THRESHOLD
 import com.geeksville.mesh.service.DistressService.PREF_STRESSTEST_ENABLED
 import com.geeksville.mesh.service.MeshService
-import com.geeksville.mesh.service.PREF_BATTERY_ALERTS_ENABLED
-import com.geeksville.mesh.service.PREF_BATTERY_ALERT_CONNECTED_SOUND_URI
-import com.geeksville.mesh.service.PREF_BATTERY_ALERT_PERCENT_THRESHOLD
-import com.geeksville.mesh.service.PREF_BATTERY_ALERT_MESH_SOUND_URI
-import com.geeksville.mesh.service.PREF_BATTERY_ALERT_SCOPE
-import com.geeksville.mesh.service.PREF_BATTERY_ALERT_VOLTAGE_THRESHOLD
 import com.geeksville.mesh.util.exceptionToSnackbar
 import com.geeksville.mesh.util.onEditorAction
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dagger.hilt.android.AndroidEntryPoint
-import java.util.Locale
 import org.meshtastic.proto.ConfigProtos
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class SettingsFragment : ScreenFragment("Settings"), Logging {
-    private data class BatteryAlertScopeOption(
-        val scope: BatteryAlertScope,
-        val label: String,
-    ) {
-        override fun toString(): String = label
-    }
-
-    private enum class BatteryAlertSoundTarget {
-        CONNECTED_NODE,
-        MESH,
-    }
-
     private var _binding: SettingsFragmentBinding? = null
 
     // This property is only valid between onCreateView and onDestroyView.
@@ -112,34 +81,6 @@ class SettingsFragment : ScreenFragment("Settings"), Logging {
     internal lateinit var locationRepository: LocationRepository
 
     private val hasGps by lazy { requireContext().hasGps() }
-    private var updatingBatteryAlertUi = false
-    private var batteryAlertScopeOptions: List<BatteryAlertScopeOption> = emptyList()
-    private var pendingBatteryAlertSoundTarget: BatteryAlertSoundTarget? = null
-    private val batteryAlertSoundPickerLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val target = pendingBatteryAlertSoundTarget
-            pendingBatteryAlertSoundTarget = null
-            if (target == null || result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
-
-            val pickedUri = result.data.getPickedRingtoneUri()
-            val preferences = getPreferences(requireContext())
-            val key = when (target) {
-                BatteryAlertSoundTarget.CONNECTED_NODE -> PREF_BATTERY_ALERT_CONNECTED_SOUND_URI
-                BatteryAlertSoundTarget.MESH -> PREF_BATTERY_ALERT_MESH_SOUND_URI
-            }
-            val normalizedUri = pickedUri
-                ?.takeUnless { it == RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) }
-                ?.toString()
-
-            preferences.edit {
-                if (normalizedUri == null) {
-                    remove(key)
-                } else {
-                    putString(key, normalizedUri)
-                }
-            }
-            updateBatteryAlertSoundLabels(preferences)
-        }
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -223,100 +164,7 @@ class SettingsFragment : ScreenFragment("Settings"), Logging {
 
     private val regions = RegionInfo.entries
 
-    private fun updateBatteryAlertInputs(enabled: Boolean) {
-        binding.batteryAlertPercentThresholdLayout.isEnabled = enabled
-        binding.batteryAlertPercentThresholdEditText.isEnabled = enabled
-        binding.batteryAlertVoltageThresholdLayout.isEnabled = enabled
-        binding.batteryAlertVoltageThresholdEditText.isEnabled = enabled
-        binding.batteryAlertScopeLayout.isEnabled = enabled
-        binding.batteryAlertScopeDropdown.isEnabled = enabled
-        binding.batteryAlertBtSoundChooseButton.isEnabled = enabled
-        binding.batteryAlertBtSoundDefaultButton.isEnabled = enabled
-        binding.batteryAlertMeshSoundChooseButton.isEnabled = enabled
-        binding.batteryAlertMeshSoundDefaultButton.isEnabled = enabled
-
-        val enabledAlpha = if (enabled) 1f else 0.5f
-        binding.batteryAlertScopeLayout.alpha = enabledAlpha
-        binding.batteryAlertBtSoundSection.alpha = enabledAlpha
-        binding.batteryAlertMeshSoundSection.alpha = enabledAlpha
-    }
-
-    private fun setBatteryAlertsEnabled(enabled: Boolean) {
-        getPreferences(requireContext()).edit { putBoolean(PREF_BATTERY_ALERTS_ENABLED, enabled) }
-        updatingBatteryAlertUi = true
-        binding.batteryAlertsCheckbox.isChecked = enabled
-        updatingBatteryAlertUi = false
-        updateBatteryAlertInputs(enabled)
-    }
-
-    private fun formatBatteryAlertVoltageThreshold(value: Float): String =
-        if (value == 0f) {
-            "0"
-        } else {
-            String.format(Locale.getDefault(), "%.2f", value)
-        }
-
-    private fun selectedBatteryAlertScope(preferences: SharedPreferences): BatteryAlertScope =
-        BatteryAlertScope.fromPreferenceValue(
-            preferences.getString(
-                PREF_BATTERY_ALERT_SCOPE,
-                BatteryAlertScope.ALL_NODES.preferenceValue
-            )
-        )
-
-    private fun setBatteryAlertScopeSelection(scope: BatteryAlertScope) {
-        val binding = _binding ?: return
-        val label = batteryAlertScopeOptions.firstOrNull { it.scope == scope }?.label ?: return
-        binding.batteryAlertScopeDropdown.setText(label, false)
-    }
-
-    private fun batteryAlertDefaultSoundUri(): Uri =
-        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-
-    private fun batteryAlertSoundTitle(uriString: String?): String {
-        val soundUri = uriString?.takeUnless { it.isBlank() }?.let(Uri::parse) ?: batteryAlertDefaultSoundUri()
-        val ringtoneTitle = RingtoneManager.getRingtone(requireContext(), soundUri)
-            ?.getTitle(requireContext())
-            ?: getString(R.string.battery_alert_sound_unavailable)
-
-        return if (uriString.isNullOrBlank()) {
-            getString(R.string.battery_alert_sound_default_format, ringtoneTitle)
-        } else {
-            ringtoneTitle
-        }
-    }
-
-    private fun updateBatteryAlertSoundLabels(preferences: SharedPreferences) {
-        val binding = _binding ?: return
-        binding.batteryAlertBtSoundValue.text = batteryAlertSoundTitle(
-            preferences.getString(PREF_BATTERY_ALERT_CONNECTED_SOUND_URI, null)
-        )
-        binding.batteryAlertMeshSoundValue.text = batteryAlertSoundTitle(
-            preferences.getString(PREF_BATTERY_ALERT_MESH_SOUND_URI, null)
-        )
-    }
-
-    private fun launchBatteryAlertSoundPicker(
-        target: BatteryAlertSoundTarget,
-        existingUriString: String?
-    ) {
-        pendingBatteryAlertSoundTarget = target
-        batteryAlertSoundPickerLauncher.launch(
-            Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
-                putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_NOTIFICATION)
-                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
-                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
-                putExtra(RingtoneManager.EXTRA_RINGTONE_DEFAULT_URI, batteryAlertDefaultSoundUri())
-                putExtra(
-                    RingtoneManager.EXTRA_RINGTONE_EXISTING_URI,
-                    existingUriString?.takeUnless { it.isBlank() }?.let(Uri::parse) ?: batteryAlertDefaultSoundUri()
-                )
-            }
-        )
-    }
-
     private fun initCommonUI() {
-        val preferences = getPreferences(requireContext())
 
         val requestLocationPermissionLauncher =
             registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
@@ -328,15 +176,6 @@ class SettingsFragment : ScreenFragment("Settings"), Logging {
                     model.showSnackbar(getString(R.string.why_background_required))
                 }
                 bluetoothViewModel.permissionsUpdated()
-            }
-        val requestNotificationPermissionLauncher =
-            registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-                if (permissions.entries.all { it.value }) {
-                    setBatteryAlertsEnabled(true)
-                } else {
-                    setBatteryAlertsEnabled(false)
-                    model.showSnackbar(getString(R.string.notification_denied))
-                }
             }
 
         // init our region spinner
@@ -464,118 +303,6 @@ class SettingsFragment : ScreenFragment("Settings"), Logging {
             } else {
                 model.meshService?.stopProvideLocation()
             }
-        }
-
-        updatingBatteryAlertUi = true
-        binding.batteryAlertsCheckbox.isChecked =
-            preferences.getBoolean(PREF_BATTERY_ALERTS_ENABLED, false)
-        binding.batteryAlertPercentThresholdEditText.setText(
-            preferences.getInt(
-                PREF_BATTERY_ALERT_PERCENT_THRESHOLD,
-                DEFAULT_BATTERY_ALERT_PERCENT_THRESHOLD
-            ).toString()
-        )
-        binding.batteryAlertVoltageThresholdEditText.setText(
-            formatBatteryAlertVoltageThreshold(
-                preferences.getFloat(
-                    PREF_BATTERY_ALERT_VOLTAGE_THRESHOLD,
-                    DEFAULT_BATTERY_ALERT_VOLTAGE_THRESHOLD
-                )
-            )
-        )
-        batteryAlertScopeOptions = listOf(
-            BatteryAlertScopeOption(
-                scope = BatteryAlertScope.ALL_NODES,
-                label = getString(R.string.battery_alert_scope_all_nodes)
-            ),
-            BatteryAlertScopeOption(
-                scope = BatteryAlertScope.CONNECTED_NODE_ONLY,
-                label = getString(R.string.battery_alert_scope_connected_bt_node)
-            ),
-        )
-        binding.batteryAlertScopeDropdown.setAdapter(
-            ArrayAdapter(
-                requireContext(),
-                android.R.layout.simple_list_item_1,
-                batteryAlertScopeOptions
-            )
-        )
-        setBatteryAlertScopeSelection(selectedBatteryAlertScope(preferences))
-        updateBatteryAlertSoundLabels(preferences)
-        updatingBatteryAlertUi = false
-        updateBatteryAlertInputs(binding.batteryAlertsCheckbox.isChecked)
-
-        binding.batteryAlertsCheckbox.setOnCheckedChangeListener { view, isChecked ->
-            if (updatingBatteryAlertUi) return@setOnCheckedChangeListener
-
-            if (view.isPressed && isChecked && !requireContext().hasNotificationPermission()) {
-                updatingBatteryAlertUi = true
-                view.isChecked = false
-                updatingBatteryAlertUi = false
-
-                val notificationPermissions = requireContext().getNotificationPermissions()
-                requireContext().rationaleDialog(
-                    shouldShowRequestPermissionRationale(notificationPermissions),
-                    R.string.notification_required,
-                    getString(R.string.why_notification_required),
-                ) {
-                    requestNotificationPermissionLauncher.launch(notificationPermissions)
-                }
-                return@setOnCheckedChangeListener
-            }
-
-            preferences.edit { putBoolean(PREF_BATTERY_ALERTS_ENABLED, isChecked) }
-            updateBatteryAlertInputs(isChecked)
-        }
-
-        binding.batteryAlertScopeDropdown.setOnClickListener {
-            if (binding.batteryAlertScopeDropdown.isEnabled) {
-                binding.batteryAlertScopeDropdown.showDropDown()
-            }
-        }
-        binding.batteryAlertScopeDropdown.setOnItemClickListener { parent, _, position, _ ->
-            if (updatingBatteryAlertUi) return@setOnItemClickListener
-
-            val selected = parent.getItemAtPosition(position) as BatteryAlertScopeOption
-            preferences.edit {
-                putString(PREF_BATTERY_ALERT_SCOPE, selected.scope.preferenceValue)
-            }
-        }
-
-        binding.batteryAlertBtSoundChooseButton.setOnClickListener {
-            launchBatteryAlertSoundPicker(
-                target = BatteryAlertSoundTarget.CONNECTED_NODE,
-                existingUriString = preferences.getString(PREF_BATTERY_ALERT_CONNECTED_SOUND_URI, null)
-            )
-        }
-        binding.batteryAlertBtSoundDefaultButton.setOnClickListener {
-            preferences.edit { remove(PREF_BATTERY_ALERT_CONNECTED_SOUND_URI) }
-            updateBatteryAlertSoundLabels(preferences)
-        }
-        binding.batteryAlertMeshSoundChooseButton.setOnClickListener {
-            launchBatteryAlertSoundPicker(
-                target = BatteryAlertSoundTarget.MESH,
-                existingUriString = preferences.getString(PREF_BATTERY_ALERT_MESH_SOUND_URI, null)
-            )
-        }
-        binding.batteryAlertMeshSoundDefaultButton.setOnClickListener {
-            preferences.edit { remove(PREF_BATTERY_ALERT_MESH_SOUND_URI) }
-            updateBatteryAlertSoundLabels(preferences)
-        }
-
-        binding.batteryAlertPercentThresholdEditText.doAfterTextChanged { text ->
-            if (updatingBatteryAlertUi) return@doAfterTextChanged
-
-            val threshold = text?.toString()?.trim()?.toIntOrNull()?.coerceIn(0, 100) ?: 0
-            preferences.edit { putInt(PREF_BATTERY_ALERT_PERCENT_THRESHOLD, threshold) }
-        }
-
-        binding.batteryAlertVoltageThresholdEditText.doAfterTextChanged { text ->
-            if (updatingBatteryAlertUi) return@doAfterTextChanged
-
-            val threshold = text?.toString()?.trim()?.toFloatOrNull()
-                ?.coerceIn(0f, MAX_BATTERY_ALERT_VOLTAGE_THRESHOLD) ?: 0f
-            preferences.edit { putFloat(PREF_BATTERY_ALERT_VOLTAGE_THRESHOLD, threshold) }
         }
 
         val app = (requireContext().applicationContext as GeeksvilleApplication)
@@ -806,15 +533,6 @@ class SettingsFragment : ScreenFragment("Settings"), Logging {
         } else {
             @Suppress("DEPRECATION")
             Patterns.IP_ADDRESS.matcher(this).matches()
-        }
-    }
-
-    private fun Intent?.getPickedRingtoneUri(): Uri? {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            this?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI, Uri::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            this?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
         }
     }
 }
