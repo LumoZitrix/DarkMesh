@@ -24,7 +24,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
-import com.geeksville.mesh.ADV_SETTINGS_PREFS
+import com.geeksville.mesh.ui.ADV_SETTINGS_PREFS
 
 
 /// show a toast

@@ -1,4 +1,4 @@
-package com.geeksville.mesh
+package com.geeksville.mesh.ui
 
 import android.os.Bundle
 import android.view.View
@@ -12,11 +12,11 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.edit
 import com.emp3r0r7.darkmesh.R
-import com.geeksville.mesh.AutoDeleteConfig.hoursValues
 import com.geeksville.mesh.android.advancedPrefs
 import com.geeksville.mesh.model.UIViewModel
 import com.geeksville.mesh.service.DistressService.PREF_STRESSTEST_DEFAULT_PREFIX
 import com.geeksville.mesh.service.DistressService.PREF_STRESSTEST_PREFIX
+import com.geeksville.mesh.ui.AutoDeleteConfig.hoursValues
 
 
 const val ADV_SETTINGS_PREFS = "darkmesh_advanced_settings"

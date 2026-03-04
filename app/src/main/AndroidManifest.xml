@@ -262,7 +262,7 @@
             android:name="com.geeksville.mesh.AppIntroduction"/>
 
         <activity
-            android:name="com.geeksville.mesh.AdvancedSettings"/>
+            android:name="com.geeksville.mesh.ui.AdvancedSettings"/>
 
         <activity
             android:name="com.geeksville.mesh.ui.BatteryNotification"/>

@@ -104,6 +104,11 @@ import com.geeksville.mesh.service.MeshServiceNotifications
 import com.geeksville.mesh.service.PlanMsgService
 import com.geeksville.mesh.service.ServiceRepository
 import com.geeksville.mesh.service.startService
+import com.geeksville.mesh.ui.AUTO_DELETE_OLD_NODES
+import com.geeksville.mesh.ui.AUTO_DELETE_PRESERVE_FAVOURITES
+import com.geeksville.mesh.ui.AUTO_DELETE_TIME_HOURS
+import com.geeksville.mesh.ui.AdvancedSettings
+import com.geeksville.mesh.ui.AutoDeleteConfig
 import com.geeksville.mesh.ui.BatteryNotification
 import com.geeksville.mesh.ui.ChannelFragment
 import com.geeksville.mesh.ui.ContactsFragment
