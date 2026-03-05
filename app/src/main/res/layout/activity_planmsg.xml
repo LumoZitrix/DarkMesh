@@ -21,10 +21,27 @@
         tools:ignore="HardcodedText" />
 
     <Spinner
+        android:id="@+id/spinnerScheduleType"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp" />
+
+    <Spinner
         android:id="@+id/spinnerDay"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp" />
+
+    <Button
+        android:id="@+id/btnDate"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:backgroundTint="#470202"
+        android:text="Date: --/--/----"
+        android:textColor="#FFFFFF"
+        android:visibility="gone"
+        tools:ignore="HardcodedText" />
 
     <Button
         android:backgroundTint="#470202"
@@ -51,6 +68,12 @@
         android:hint="Message"
         android:layout_marginTop="8dp"
         tools:ignore="Autofill,HardcodedText,TextFields" />
+
+    <Spinner
+        android:id="@+id/spinnerPolicy"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" />
 
     <Button
         android:backgroundTint="#470202"

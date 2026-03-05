@@ -37,6 +37,8 @@ import com.geeksville.mesh.database.entity.NodeEntity
 import com.geeksville.mesh.database.entity.Packet
 import com.geeksville.mesh.database.entity.QuickChatAction
 import com.geeksville.mesh.database.entity.ReactionEntity
+import com.geeksville.mesh.plannedmessages.data.PlannedMessageDao
+import com.geeksville.mesh.plannedmessages.data.PlannedMessageEntity
 
 @Database(
     entities = [
@@ -48,6 +50,7 @@ import com.geeksville.mesh.database.entity.ReactionEntity
         QuickChatAction::class,
         ReactionEntity::class,
         MetadataEntity::class,
+        PlannedMessageEntity::class,
     ],
     autoMigrations = [
         AutoMigration(from = 3, to = 4),
@@ -63,8 +66,10 @@ import com.geeksville.mesh.database.entity.ReactionEntity
         AutoMigration(from = 13, to = 14),
         AutoMigration(from = 14, to = 15),
         AutoMigration(from = 15, to = 16),
+        AutoMigration(from = 16, to = 17),
+        AutoMigration(from = 17, to = 18),
     ],
-    version = 17,
+    version = 18,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -73,6 +78,7 @@ abstract class MeshtasticDatabase : RoomDatabase() {
     abstract fun packetDao(): PacketDao
     abstract fun meshLogDao(): MeshLogDao
     abstract fun quickChatActionDao(): QuickChatActionDao
+    abstract fun plannedMessageDao(): PlannedMessageDao
 
     companion object {
         fun getDatabase(context: Context): MeshtasticDatabase {

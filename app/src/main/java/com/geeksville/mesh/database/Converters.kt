@@ -20,6 +20,8 @@ package com.geeksville.mesh.database
 import androidx.room.TypeConverter
 import com.geeksville.mesh.DataPacket
 import com.geeksville.mesh.android.Logging
+import com.geeksville.mesh.plannedmessages.domain.PlannedMessageDeliveryPolicy
+import com.geeksville.mesh.plannedmessages.domain.PlannedMessageScheduleType
 import com.google.protobuf.InvalidProtocolBufferException
 import kotlinx.serialization.json.Json
 import org.meshtastic.proto.MeshProtos
@@ -28,6 +30,26 @@ import org.meshtastic.proto.TelemetryProtos
 
 @Suppress("TooManyFunctions")
 class Converters : Logging {
+    @TypeConverter
+    fun scheduleTypeFromString(value: String): PlannedMessageScheduleType {
+        return PlannedMessageScheduleType.valueOf(value)
+    }
+
+    @TypeConverter
+    fun scheduleTypeToString(value: PlannedMessageScheduleType): String {
+        return value.name
+    }
+
+    @TypeConverter
+    fun deliveryPolicyFromString(value: String): PlannedMessageDeliveryPolicy {
+        return PlannedMessageDeliveryPolicy.valueOf(value)
+    }
+
+    @TypeConverter
+    fun deliveryPolicyToString(value: PlannedMessageDeliveryPolicy): String {
+        return value.name
+    }
+
     @TypeConverter
     fun dataFromString(value: String): DataPacket {
         val json = Json { isLenient = true }

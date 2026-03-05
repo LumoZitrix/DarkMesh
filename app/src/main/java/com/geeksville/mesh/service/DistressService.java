@@ -187,7 +187,7 @@ public class DistressService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
         else
-            Toast.makeText(this, "Unable to launch PlanMsgService, version unsupported!", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Unable to launch DistressService, version unsupported!", Toast.LENGTH_LONG).show();
 
         String contactKey = intent.getStringExtra("contactKey");
         String userInput = intent.getStringExtra("userInput");

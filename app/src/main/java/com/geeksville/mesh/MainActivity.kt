@@ -91,6 +91,7 @@ import com.geeksville.mesh.model.colorizeTracerouteResponse
 import com.geeksville.mesh.prefs.UserPrefs
 import com.geeksville.mesh.prefs.UserPrefs.Hunting.BACKGROUND_HUNT
 import com.geeksville.mesh.prefs.UserPrefs.Hunting.HUNT_MODE
+import com.geeksville.mesh.plannedmessages.data.PlannedMessageRepository
 import com.geeksville.mesh.service.DistressService
 import com.geeksville.mesh.service.DistressService.PREF_STRESSTEST_ENABLED
 import com.geeksville.mesh.service.GlobalRadioMesh
@@ -99,7 +100,6 @@ import com.geeksville.mesh.service.GlobalRadioMesh.radioMeshService
 import com.geeksville.mesh.service.HuntScheduleService
 import com.geeksville.mesh.service.MeshService
 import com.geeksville.mesh.service.MeshServiceNotifications
-import com.geeksville.mesh.service.PlanMsgService
 import com.geeksville.mesh.service.ServiceRepository
 import com.geeksville.mesh.service.startService
 import com.geeksville.mesh.ui.ChannelFragment
@@ -188,7 +188,6 @@ class MainActivity : AppCompatActivity(), Logging {
     private lateinit var huntingPrefs: SharedPreferences
     private lateinit var msgStatusPrefs: SharedPreferences
 
-    private lateinit var planMsgServiceIntent: Intent
     private lateinit var distressBeaconServiceIntent: Intent
 
     // Used to schedule a coroutine in the GUI thread
@@ -200,6 +199,9 @@ class MainActivity : AppCompatActivity(), Logging {
 
     @Inject
     internal lateinit var serviceRepository: ServiceRepository
+
+    @Inject
+    internal lateinit var plannedMessageRepository: PlannedMessageRepository
 
     private val bluetoothPermissionsLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -277,7 +279,6 @@ class MainActivity : AppCompatActivity(), Logging {
         msgStatusPrefs =
             getSharedPreferences(UserPrefs.PlannedMessage.SHARED_PLANMSG_PREFS_STATUS, MODE_PRIVATE)
 
-        planMsgServiceIntent = Intent(this, PlanMsgService::class.java)
         distressBeaconServiceIntent = Intent(this, DistressService::class.java)
 
         if (savedInstanceState == null) {
@@ -1259,13 +1260,11 @@ class MainActivity : AppCompatActivity(), Logging {
     }
 
     private fun checkIfDeviceIsPlanningMsg() {
-        val msgPlanOn =
-            msgStatusPrefs.getBoolean(UserPrefs.PlannedMessage.PLANMSG_SERVICE_ACTIVE, false)
-        if (msgPlanOn) {
-            debug("MSG Plan is ON, proceeding..")
-            startService(planMsgServiceIntent)
-        } else {
-            debug("MSG Plan is OFF, doing nothing..")
+        val msgPlanOn = msgStatusPrefs.getBoolean(UserPrefs.PlannedMessage.PLANMSG_SERVICE_ACTIVE, false)
+        debug("MSG Plan status=$msgPlanOn, syncing scheduler")
+        lifecycleScope.launch {
+            runCatching { plannedMessageRepository.bootstrap() }
+                .onFailure { warn("Planned message bootstrap failed: ${it.message}") }
         }
     }
 

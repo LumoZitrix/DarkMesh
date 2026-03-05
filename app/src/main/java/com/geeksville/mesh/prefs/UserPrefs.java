@@ -24,6 +24,7 @@ public class UserPrefs {
         public static final String SHARED_PLANMSG_PREFS_STATUS = "planmsg_status";
         // ----> params
         public static final String PLANMSG_SERVICE_ACTIVE = "status"; //param
+        public static final String PLANMSG_MIGRATION_DONE = "migration_done";
         // <---- end params
 
 

@@ -164,11 +164,10 @@
         </service>
 
         <service
-            android:name="com.geeksville.mesh.service.PlanMsgService"
+            android:name="com.geeksville.mesh.plannedmessages.execution.PlannedMessageSendService"
             android:enabled="true"
             android:foregroundServiceType="connectedDevice"
-            android:exported="false">
-        </service>
+            android:exported="false" />
 
         <activity android:name="com.geeksville.mesh.ui.activity.HuntActivity"
             android:screenOrientation="portrait"
@@ -256,6 +255,22 @@
 
             <!-- Also restart our service if the app gets upgraded -->
 
+        </receiver>
+
+        <receiver
+            android:name="com.geeksville.mesh.plannedmessages.trigger.PlannedMessageAlarmReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <receiver
+            android:name="com.geeksville.mesh.plannedmessages.trigger.PlannedMessageRescheduleReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.TIME_SET" />
+            </intent-filter>
         </receiver>
 
         <activity

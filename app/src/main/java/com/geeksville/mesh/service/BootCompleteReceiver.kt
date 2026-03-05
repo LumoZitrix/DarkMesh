@@ -21,11 +21,34 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.geeksville.mesh.android.Logging
+import com.geeksville.mesh.plannedmessages.trigger.PlannedMessageReceiverEntryPoint
+import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 
 class BootCompleteReceiver : BroadcastReceiver(), Logging {
     override fun onReceive(mContext: Context, intent: Intent) {
         // start listening for bluetooth messages from our device
         MeshService.startServiceLater(mContext)
+
+        val pendingResult = goAsync()
+        receiverScope.launch {
+            try {
+                val entryPoint = EntryPointAccessors.fromApplication(
+                    mContext.applicationContext,
+                    PlannedMessageReceiverEntryPoint::class.java,
+                )
+                entryPoint.plannedMessageRepository().bootstrap()
+            } finally {
+                pendingResult.finish()
+            }
+        }
+    }
+
+    companion object {
+        private val receiverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }
