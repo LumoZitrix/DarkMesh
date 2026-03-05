@@ -54,7 +54,7 @@ class MeshtasticDatabaseTest {
             InstrumentationRegistry.getInstrumentation().targetContext,
             MeshtasticDatabase::class.java,
             TEST_DB
-        ).build().apply {
+        ).addMigrations(MeshtasticDatabase.MIGRATION_18_19).build().apply {
             openHelper.writableDatabase.close()
         }
     }

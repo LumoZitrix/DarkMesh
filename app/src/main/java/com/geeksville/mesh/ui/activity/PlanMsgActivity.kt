@@ -21,13 +21,16 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.viewModels
+import androidx.appcompat.widget.SwitchCompat
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
 import com.emp3r0r7.darkmesh.R
 import com.geeksville.mesh.database.entity.NodeEntity
 import com.geeksville.mesh.database.entity.QuickChatAction
 import com.geeksville.mesh.plannedmessages.data.PlannedMessageDraft
+import com.geeksville.mesh.plannedmessages.domain.LateFireMode
 import com.geeksville.mesh.plannedmessages.domain.PlannedMessageDeliveryPolicy
+import com.geeksville.mesh.plannedmessages.domain.PlannedMessageSettings
 import com.geeksville.mesh.plannedmessages.domain.PlannedMessageScheduleType
 import com.geeksville.mesh.plannedmessages.domain.WeeklyDays
 import com.geeksville.mesh.plannedmessages.ui.PlannedMessageEditorViewModel
@@ -55,7 +58,9 @@ class PlanMsgActivity : AppCompatActivity() {
     private lateinit var spinnerScheduleType: Spinner
     private lateinit var spinnerDay: Spinner
     private lateinit var spinnerPolicy: Spinner
+    private lateinit var spinnerGraceWindow: Spinner
     private lateinit var quickMessagesSpinner: NDSpinner
+    private lateinit var switchLateFireWithinGrace: SwitchCompat
     private lateinit var btnDate: Button
     private lateinit var btnTime: Button
     private lateinit var btnAdd: Button
@@ -66,6 +71,8 @@ class PlanMsgActivity : AppCompatActivity() {
     private var selectedHour = -1
     private var selectedMinute = -1
     private var selectedDate: LocalDate = LocalDate.now()
+    private var suppressDelayPrecisionCallbacks = false
+    private var delayPrecisionInitialized = false
     private val rules = mutableListOf<RuleDraftUi>()
     private val rulesAdapter by lazy {
         ArrayAdapter(this, android.R.layout.simple_list_item_1, mutableListOf<String>())
@@ -104,7 +111,9 @@ class PlanMsgActivity : AppCompatActivity() {
         spinnerScheduleType = findViewById(R.id.spinnerScheduleType)
         spinnerDay = findViewById(R.id.spinnerDay)
         spinnerPolicy = findViewById(R.id.spinnerPolicy)
+        spinnerGraceWindow = findViewById(R.id.spinnerGraceWindow)
         quickMessagesSpinner = findViewById(R.id.quick_messages)
+        switchLateFireWithinGrace = findViewById(R.id.switchLateFireWithinGrace)
         btnDate = findViewById(R.id.btnDate)
         btnTime = findViewById(R.id.btnTime)
         btnAdd = findViewById(R.id.btnAdd)
@@ -127,6 +136,11 @@ class PlanMsgActivity : AppCompatActivity() {
             android.R.layout.simple_spinner_dropdown_item,
             POLICY_LABELS,
         )
+        spinnerGraceWindow.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            GRACE_WINDOW_LABELS,
+        )
 
         listRules.adapter = rulesAdapter
         listRules.setOnItemClickListener { _, _, position, _ ->
@@ -142,6 +156,26 @@ class PlanMsgActivity : AppCompatActivity() {
                 val isOneShot = selectedScheduleType() == PlannedMessageScheduleType.ONE_SHOT
                 btnDate.isVisible = isOneShot
                 spinnerDay.isVisible = !isOneShot
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        switchLateFireWithinGrace.setOnCheckedChangeListener { _, enabled ->
+            if (suppressDelayPrecisionCallbacks || !delayPrecisionInitialized) return@setOnCheckedChangeListener
+            spinnerGraceWindow.isEnabled = enabled
+            viewModel.updateLateFireWithinGrace(
+                enabled = enabled,
+                graceMs = selectedGraceWindowMs(),
+            )
+        }
+        spinnerGraceWindow.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressDelayPrecisionCallbacks || !delayPrecisionInitialized) return
+                viewModel.updateLateFireWithinGrace(
+                    enabled = switchLateFireWithinGrace.isChecked,
+                    graceMs = selectedGraceWindowMs(),
+                )
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
@@ -195,6 +229,9 @@ class PlanMsgActivity : AppCompatActivity() {
             statusView.text = "Global Planner Status: ${if (enabled) "ON" else "OFF"}"
             statusView.setTextColor(getColor(if (enabled) android.R.color.holo_green_dark else android.R.color.holo_red_dark))
         }
+        viewModel.settings.observe(this) { settings ->
+            renderDelayPrecisionSettings(settings)
+        }
 
         viewModel.observeByDestination(currentDestinationKey).observe(this) { entities ->
             rules.clear()
@@ -212,6 +249,19 @@ class PlanMsgActivity : AppCompatActivity() {
                 viewModel.clearSaveState()
             }
         }
+    }
+
+    private fun renderDelayPrecisionSettings(settings: PlannedMessageSettings) {
+        suppressDelayPrecisionCallbacks = true
+        val enabled = settings.lateFireMode != LateFireMode.SKIP
+        switchLateFireWithinGrace.isChecked = enabled
+        spinnerGraceWindow.isEnabled = enabled
+        val selectedIndex = GRACE_WINDOW_OPTIONS_MS.indexOf(settings.skipMissedGraceMs)
+            .takeIf { it >= 0 }
+            ?: DEFAULT_GRACE_INDEX
+        spinnerGraceWindow.setSelection(selectedIndex, false)
+        suppressDelayPrecisionCallbacks = false
+        delayPrecisionInitialized = true
     }
 
     private fun refreshRulesList() {
@@ -281,6 +331,12 @@ class PlanMsgActivity : AppCompatActivity() {
         } else {
             PlannedMessageDeliveryPolicy.CATCH_UP
         }
+    }
+
+    private fun selectedGraceWindowMs(): Long {
+        val index = spinnerGraceWindow.selectedItemPosition
+            .coerceIn(0, GRACE_WINDOW_OPTIONS_MS.lastIndex)
+        return GRACE_WINDOW_OPTIONS_MS[index]
     }
 
     @SuppressLint("SetTextI18n")
@@ -438,6 +494,11 @@ class PlanMsgActivity : AppCompatActivity() {
             .toMap()
         private val SCHEDULE_LABELS = listOf("Weekly", "One-shot")
         private val POLICY_LABELS = listOf("Skip missed", "Catch up")
+        private val GRACE_WINDOW_OPTIONS_MS = PlannedMessageSettings.ALLOWED_GRACE_WINDOWS_MS
+        private val GRACE_WINDOW_LABELS = GRACE_WINDOW_OPTIONS_MS.map { "${it / 60_000L} min" }
+        private val DEFAULT_GRACE_INDEX = GRACE_WINDOW_OPTIONS_MS
+            .indexOf(PlannedMessageSettings.DEFAULT_SKIP_MISSED_GRACE_MS)
+            .takeIf { it >= 0 } ?: 0
         private val DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
     }
 }

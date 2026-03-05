@@ -25,6 +25,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.room.migration.AutoMigrationSpec
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.geeksville.mesh.database.dao.MeshLogDao
 import com.geeksville.mesh.database.dao.NodeInfoDao
 import com.geeksville.mesh.database.dao.PacketDao
@@ -69,7 +71,7 @@ import com.geeksville.mesh.plannedmessages.data.PlannedMessageEntity
         AutoMigration(from = 16, to = 17),
         AutoMigration(from = 17, to = 18),
     ],
-    version = 18,
+    version = 19,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -88,8 +90,49 @@ abstract class MeshtasticDatabase : RoomDatabase() {
                 MeshtasticDatabase::class.java,
                 "meshtastic_database"
             )
+                .addMigrations(MIGRATION_18_19)
                 .fallbackToDestructiveMigration()
                 .build()
+        }
+
+        val MIGRATION_18_19: Migration = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    ALTER TABLE planned_messages
+                    ADD COLUMN in_flight_until_utc_epoch_ms INTEGER
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    ALTER TABLE planned_messages
+                    ADD COLUMN last_attempted_at_utc_epoch_ms INTEGER
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    ALTER TABLE planned_messages
+                    ADD COLUMN attempt_count_since_last_fire INTEGER NOT NULL DEFAULT 0
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    ALTER TABLE planned_messages
+                    ADD COLUMN had_timezone_fallback INTEGER NOT NULL DEFAULT 0
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE INDEX IF NOT EXISTS index_planned_messages_is_enabled_next_trigger_at_utc_epoch_ms_in_flight_until_utc_epoch_ms
+                    ON planned_messages(is_enabled, next_trigger_at_utc_epoch_ms, in_flight_until_utc_epoch_ms)
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    DROP INDEX IF EXISTS index_planned_messages_is_enabled_next_trigger_at_utc_epoch_ms
+                    """.trimIndent()
+                )
+            }
         }
     }
 }

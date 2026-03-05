@@ -22,9 +22,16 @@ public class UserPrefs {
 
         // ----> nome shared prefs che immagazzina lo stato del servizio di planning
         public static final String SHARED_PLANMSG_PREFS_STATUS = "planmsg_status";
+        public static final String SHARED_PLANMSG_PREFS_SETTINGS = "planmsg_settings";
         // ----> params
         public static final String PLANMSG_SERVICE_ACTIVE = "status"; //param
         public static final String PLANMSG_MIGRATION_DONE = "migration_done";
+        public static final String PLANMSG_LAST_ALARM_SCHEDULED_AT_UTC_MS = "last_alarm_scheduled_at_utc_ms";
+        public static final String PLANMSG_LAST_ALARM_FIRED_AT_UTC_MS = "last_alarm_fired_at_utc_ms";
+        public static final String PLANMSG_LAST_RUN_AT_UTC_MS = "last_run_at_utc_ms";
+        public static final String PLANMSG_LAST_CLAIMED_COUNT = "last_claimed_count";
+        public static final String PLANMSG_LAST_SENT_COUNT = "last_sent_count";
+        public static final String PLANMSG_LAST_ERROR_REASON = "last_error_reason";
         // <---- end params
 
 

@@ -14,6 +14,7 @@ import java.time.ZoneId
 class SchedulerEngineTest {
 
     private val engine = SchedulerEngine()
+    private val defaultSettings = PlannedMessageSettings()
 
     @Test
     fun `weekly schedule keeps same day when time is still ahead`() {
@@ -90,6 +91,25 @@ class SchedulerEngineTest {
     }
 
     @Test
+    fun `dst backward keeps weekly schedule valid at repeated local time`() {
+        val zoneId = ZoneId.of("Europe/Rome")
+        val now = LocalDate.of(2026, 10, 24).atTime(10, 0).atZone(zoneId).toInstant().toEpochMilli()
+        val message = weeklyMessage(
+            day = DayOfWeek.SUNDAY,
+            hour = 2,
+            minute = 30,
+            timezoneId = zoneId.id,
+        )
+
+        val next = engine.computeNextTriggerUtcEpochMs(message, now)
+        val nextLocal = Instant.ofEpochMilli(next!!).atZone(zoneId)
+
+        assertEquals(LocalDate.of(2026, 10, 25), nextLocal.toLocalDate())
+        assertEquals(2, nextLocal.hour)
+        assertEquals(30, nextLocal.minute)
+    }
+
+    @Test
     fun `one shot skip policy disables overdue message`() {
         val now = Instant.parse("2026-01-01T12:00:00Z").toEpochMilli()
         val due = Instant.parse("2026-01-01T10:00:00Z").toEpochMilli()
@@ -98,7 +118,7 @@ class SchedulerEngineTest {
             policy = PlannedMessageDeliveryPolicy.SKIP_MISSED,
         ).copy(nextTriggerAtUtcEpochMs = due)
 
-        val outcome = engine.applyExecutionPolicy(message, now)
+        val outcome = engine.applyExecutionPolicy(message, now, defaultSettings)
 
         assertFalse(outcome.shouldSend)
         assertFalse(outcome.updatedMessage.isEnabled)
@@ -114,12 +134,74 @@ class SchedulerEngineTest {
             policy = PlannedMessageDeliveryPolicy.CATCH_UP,
         ).copy(nextTriggerAtUtcEpochMs = due)
 
-        val outcome = engine.applyExecutionPolicy(message, now)
+        val outcome = engine.applyExecutionPolicy(message, now, defaultSettings)
 
         assertTrue(outcome.shouldSend)
         assertEquals(due, outcome.scheduledOccurrenceUtcEpochMs)
         assertFalse(outcome.updatedMessage.isEnabled)
         assertNotNull(outcome.updatedMessage.lastFiredAtUtcEpochMs)
+    }
+
+    @Test
+    fun `skip missed grace window is configurable for 5, 15 and 30 minutes`() {
+        val due = Instant.parse("2026-01-01T10:00:00Z").toEpochMilli()
+        val lateByTenMinutes = due + 10 * 60 * 1000L
+        val message = oneShotMessage(
+            oneShotAt = due,
+            policy = PlannedMessageDeliveryPolicy.SKIP_MISSED,
+        ).copy(nextTriggerAtUtcEpochMs = due)
+
+        val grace5 = PlannedMessageSettings(skipMissedGraceMs = 5 * 60 * 1000L)
+        val grace15 = PlannedMessageSettings(skipMissedGraceMs = 15 * 60 * 1000L)
+        val grace30 = PlannedMessageSettings(skipMissedGraceMs = 30 * 60 * 1000L)
+
+        val outcome5 = engine.applyExecutionPolicy(message, lateByTenMinutes, grace5)
+        val outcome15 = engine.applyExecutionPolicy(message, lateByTenMinutes, grace15)
+        val outcome30 = engine.applyExecutionPolicy(message, lateByTenMinutes, grace30)
+
+        assertFalse(outcome5.shouldSend)
+        assertTrue(outcome15.shouldSend)
+        assertTrue(outcome30.shouldSend)
+    }
+
+    @Test
+    fun `one shot skipped when beyond configured grace`() {
+        val due = Instant.parse("2026-01-01T10:00:00Z").toEpochMilli()
+        val lateByTwentyMinutes = due + 20 * 60 * 1000L
+        val message = oneShotMessage(
+            oneShotAt = due,
+            policy = PlannedMessageDeliveryPolicy.SKIP_MISSED,
+        ).copy(nextTriggerAtUtcEpochMs = due)
+
+        val settings = PlannedMessageSettings(
+            skipMissedGraceMs = 15 * 60 * 1000L,
+            lateFireMode = LateFireMode.FIRE_IF_WITHIN_GRACE,
+        )
+        val outcome = engine.applyExecutionPolicy(
+            message = message,
+            nowUtcEpochMs = lateByTwentyMinutes,
+            settings = settings,
+        )
+
+        assertFalse(outcome.shouldSend)
+        assertFalse(outcome.updatedMessage.isEnabled)
+        assertEquals(null, outcome.updatedMessage.nextTriggerAtUtcEpochMs)
+    }
+
+    @Test
+    fun `invalid timezone falls back to system zone and marks entity`() {
+        val now = Instant.parse("2026-01-01T12:00:00Z").toEpochMilli()
+        val message = weeklyMessage(
+            day = DayOfWeek.THURSDAY,
+            hour = 13,
+            minute = 0,
+            timezoneId = "Invalid/Timezone",
+        )
+
+        val initialized = engine.initializeForScheduling(message, now, defaultSettings)
+
+        assertTrue(initialized.hadTimezoneFallback)
+        assertNotNull(initialized.nextTriggerAtUtcEpochMs)
     }
 
     private fun weeklyMessage(

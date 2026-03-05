@@ -16,14 +16,26 @@ class SchedulerEngine @Inject constructor() {
         val updatedMessage: PlannedMessageEntity,
     )
 
+    private data class TriggerComputation(
+        val nextTriggerAtUtcEpochMs: Long?,
+        val hadTimezoneFallback: Boolean,
+    )
+
+    private data class ZoneResolution(
+        val zoneId: ZoneId,
+        val hadTimezoneFallback: Boolean,
+    )
+
     fun initializeForScheduling(
         message: PlannedMessageEntity,
         nowUtcEpochMs: Long = System.currentTimeMillis(),
+        settings: PlannedMessageSettings = PlannedMessageSettings(),
     ): PlannedMessageEntity {
-        val nextTrigger = computeNextTriggerUtcEpochMs(message, nowUtcEpochMs)
+        val trigger = computeNextTrigger(message, nowUtcEpochMs, settings)
         return message.copy(
-            isEnabled = message.isEnabled && nextTrigger != null,
-            nextTriggerAtUtcEpochMs = nextTrigger,
+            isEnabled = message.isEnabled && trigger.nextTriggerAtUtcEpochMs != null,
+            nextTriggerAtUtcEpochMs = trigger.nextTriggerAtUtcEpochMs,
+            hadTimezoneFallback = message.hadTimezoneFallback || trigger.hadTimezoneFallback,
             updatedAtUtcEpochMs = nowUtcEpochMs,
         )
     }
@@ -31,17 +43,31 @@ class SchedulerEngine @Inject constructor() {
     fun computeNextTriggerUtcEpochMs(
         message: PlannedMessageEntity,
         nowUtcEpochMs: Long = System.currentTimeMillis(),
+        settings: PlannedMessageSettings = PlannedMessageSettings(),
     ): Long? {
-        if (!message.isEnabled) return null
+        return computeNextTrigger(
+            message = message,
+            nowUtcEpochMs = nowUtcEpochMs,
+            settings = settings,
+        ).nextTriggerAtUtcEpochMs
+    }
+
+    private fun computeNextTrigger(
+        message: PlannedMessageEntity,
+        nowUtcEpochMs: Long,
+        settings: PlannedMessageSettings,
+    ): TriggerComputation {
+        if (!message.isEnabled) return TriggerComputation(nextTriggerAtUtcEpochMs = null, hadTimezoneFallback = false)
         return when (message.scheduleType) {
-            PlannedMessageScheduleType.ONE_SHOT -> computeOneShotTrigger(message, nowUtcEpochMs)
-            PlannedMessageScheduleType.WEEKLY -> computeWeeklyTrigger(message, nowUtcEpochMs)
+            PlannedMessageScheduleType.ONE_SHOT -> computeOneShotTrigger(message, nowUtcEpochMs, settings)
+            PlannedMessageScheduleType.WEEKLY -> computeWeeklyTrigger(message, nowUtcEpochMs, settings)
         }
     }
 
     fun applyExecutionPolicy(
         message: PlannedMessageEntity,
         nowUtcEpochMs: Long = System.currentTimeMillis(),
+        settings: PlannedMessageSettings = PlannedMessageSettings(),
     ): ExecutionOutcome {
         val dueAt = message.nextTriggerAtUtcEpochMs
         if (!message.isEnabled || dueAt == null || nowUtcEpochMs < dueAt) {
@@ -55,7 +81,11 @@ class SchedulerEngine @Inject constructor() {
         val shouldSend = when (message.deliveryPolicy) {
             PlannedMessageDeliveryPolicy.CATCH_UP -> true
             PlannedMessageDeliveryPolicy.SKIP_MISSED ->
-                nowUtcEpochMs - dueAt <= MAX_SKIP_GRACE_MS
+                shouldSendSkippedOccurrence(
+                    dueAtUtcEpochMs = dueAt,
+                    nowUtcEpochMs = nowUtcEpochMs,
+                    settings = settings,
+                )
         }
 
         val updated = when (message.scheduleType) {
@@ -70,9 +100,10 @@ class SchedulerEngine @Inject constructor() {
                 val reference = if (shouldSend) dueAt + 1 else max(nowUtcEpochMs, dueAt) + 1
                 val next = computeWeeklyFutureTrigger(message, reference)
                 message.copy(
-                    isEnabled = message.isEnabled && next != null,
-                    nextTriggerAtUtcEpochMs = next,
+                    isEnabled = message.isEnabled && next.nextTriggerAtUtcEpochMs != null,
+                    nextTriggerAtUtcEpochMs = next.nextTriggerAtUtcEpochMs,
                     lastFiredAtUtcEpochMs = if (shouldSend) dueAt else message.lastFiredAtUtcEpochMs,
+                    hadTimezoneFallback = message.hadTimezoneFallback || next.hadTimezoneFallback,
                     updatedAtUtcEpochMs = nowUtcEpochMs,
                 )
             }
@@ -88,41 +119,81 @@ class SchedulerEngine @Inject constructor() {
     private fun computeOneShotTrigger(
         message: PlannedMessageEntity,
         nowUtcEpochMs: Long,
-    ): Long? {
-        val oneShotAt = message.oneShotAtUtcEpochMs ?: return null
-        return when {
+        settings: PlannedMessageSettings,
+    ): TriggerComputation {
+        val oneShotAt = message.oneShotAtUtcEpochMs
+            ?: return TriggerComputation(nextTriggerAtUtcEpochMs = null, hadTimezoneFallback = false)
+        val nextTriggerAt = when {
             oneShotAt >= nowUtcEpochMs -> oneShotAt
             message.deliveryPolicy == PlannedMessageDeliveryPolicy.CATCH_UP -> oneShotAt
+            shouldSendSkippedOccurrence(
+                dueAtUtcEpochMs = oneShotAt,
+                nowUtcEpochMs = nowUtcEpochMs,
+                settings = settings,
+            ) -> oneShotAt
             else -> null
         }
+        return TriggerComputation(nextTriggerAtUtcEpochMs = nextTriggerAt, hadTimezoneFallback = false)
     }
 
     private fun computeWeeklyTrigger(
         message: PlannedMessageEntity,
         nowUtcEpochMs: Long,
-    ): Long? {
-        if (message.daysOfWeekMask == 0) return null
+        settings: PlannedMessageSettings,
+    ): TriggerComputation {
+        if (message.daysOfWeekMask == 0) {
+            return TriggerComputation(nextTriggerAtUtcEpochMs = null, hadTimezoneFallback = false)
+        }
 
-        val zoneId = resolveZoneId(message.timezoneId)
-        val nowZoned = Instant.ofEpochMilli(nowUtcEpochMs).atZone(zoneId)
+        val zoneResolution = resolveZoneId(message.timezoneId)
+        val nowZoned = Instant.ofEpochMilli(nowUtcEpochMs).atZone(zoneResolution.zoneId)
+        val nowLocal = nowZoned.toLocalDateTime()
+        val latestCandidate = latestCandidateAtOrBefore(message, nowLocal, zoneResolution.zoneId)
 
-        if (message.deliveryPolicy == PlannedMessageDeliveryPolicy.CATCH_UP) {
-            latestCandidateAtOrBefore(message, nowZoned.toLocalDateTime(), zoneId)?.let {
-                if (it <= nowUtcEpochMs) return it
+        if (latestCandidate != null && latestCandidate <= nowUtcEpochMs) {
+            val shouldUsePastOccurrence = when (message.deliveryPolicy) {
+                PlannedMessageDeliveryPolicy.CATCH_UP -> true
+                PlannedMessageDeliveryPolicy.SKIP_MISSED -> shouldSendSkippedOccurrence(
+                    dueAtUtcEpochMs = latestCandidate,
+                    nowUtcEpochMs = nowUtcEpochMs,
+                    settings = settings,
+                )
+            }
+            if (shouldUsePastOccurrence) {
+                return TriggerComputation(
+                    nextTriggerAtUtcEpochMs = latestCandidate,
+                    hadTimezoneFallback = zoneResolution.hadTimezoneFallback,
+                )
             }
         }
 
-        return nextCandidateAtOrAfter(message, nowZoned.toLocalDateTime(), zoneId)
+        return TriggerComputation(
+            nextTriggerAtUtcEpochMs = nextCandidateAtOrAfter(
+                message = message,
+                localDateTime = nowLocal,
+                zoneId = zoneResolution.zoneId,
+            ),
+            hadTimezoneFallback = zoneResolution.hadTimezoneFallback,
+        )
     }
 
     private fun computeWeeklyFutureTrigger(
         message: PlannedMessageEntity,
         nowUtcEpochMs: Long,
-    ): Long? {
-        if (message.daysOfWeekMask == 0) return null
-        val zoneId = resolveZoneId(message.timezoneId)
-        val nowZoned = Instant.ofEpochMilli(nowUtcEpochMs).atZone(zoneId)
-        return nextCandidateAtOrAfter(message, nowZoned.toLocalDateTime(), zoneId)
+    ): TriggerComputation {
+        if (message.daysOfWeekMask == 0) {
+            return TriggerComputation(nextTriggerAtUtcEpochMs = null, hadTimezoneFallback = false)
+        }
+        val zoneResolution = resolveZoneId(message.timezoneId)
+        val nowZoned = Instant.ofEpochMilli(nowUtcEpochMs).atZone(zoneResolution.zoneId)
+        return TriggerComputation(
+            nextTriggerAtUtcEpochMs = nextCandidateAtOrAfter(
+                message = message,
+                localDateTime = nowZoned.toLocalDateTime(),
+                zoneId = zoneResolution.zoneId,
+            ),
+            hadTimezoneFallback = zoneResolution.hadTimezoneFallback,
+        )
     }
 
     private fun nextCandidateAtOrAfter(
@@ -159,12 +230,26 @@ class SchedulerEngine @Inject constructor() {
         return null
     }
 
-    private fun resolveZoneId(timezoneId: String): ZoneId {
-        return runCatching { ZoneId.of(timezoneId) }.getOrElse { ZoneId.systemDefault() }
+    private fun resolveZoneId(timezoneId: String): ZoneResolution {
+        val zoneId = runCatching { ZoneId.of(timezoneId) }.getOrNull()
+        return if (zoneId != null) {
+            ZoneResolution(zoneId = zoneId, hadTimezoneFallback = false)
+        } else {
+            ZoneResolution(zoneId = ZoneId.systemDefault(), hadTimezoneFallback = true)
+        }
     }
 
-    companion object {
-        // Alarm delivery can jitter a little while idle; do not classify tiny delays as missed.
-        private const val MAX_SKIP_GRACE_MS = 2 * 60 * 1000L
+    private fun shouldSendSkippedOccurrence(
+        dueAtUtcEpochMs: Long,
+        nowUtcEpochMs: Long,
+        settings: PlannedMessageSettings,
+    ): Boolean {
+        if (nowUtcEpochMs <= dueAtUtcEpochMs) return true
+        val lateByMs = nowUtcEpochMs - dueAtUtcEpochMs
+        return when (settings.lateFireMode) {
+            LateFireMode.SKIP -> false
+            LateFireMode.FIRE_IMMEDIATELY -> true
+            LateFireMode.FIRE_IF_WITHIN_GRACE -> lateByMs <= settings.skipMissedGraceMs
+        }
     }
 }

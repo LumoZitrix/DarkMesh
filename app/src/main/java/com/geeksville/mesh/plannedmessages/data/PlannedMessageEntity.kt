@@ -11,7 +11,7 @@ import com.geeksville.mesh.plannedmessages.domain.PlannedMessageScheduleType
     tableName = "planned_messages",
     indices = [
         Index(value = ["destination_key"]),
-        Index(value = ["is_enabled", "next_trigger_at_utc_epoch_ms"]),
+        Index(value = ["is_enabled", "next_trigger_at_utc_epoch_ms", "in_flight_until_utc_epoch_ms"]),
     ],
 )
 data class PlannedMessageEntity(
@@ -39,8 +39,16 @@ data class PlannedMessageEntity(
     val isEnabled: Boolean = true,
     @ColumnInfo(name = "next_trigger_at_utc_epoch_ms")
     val nextTriggerAtUtcEpochMs: Long?,
+    @ColumnInfo(name = "in_flight_until_utc_epoch_ms")
+    val inFlightUntilUtcEpochMs: Long? = null,
+    @ColumnInfo(name = "last_attempted_at_utc_epoch_ms")
+    val lastAttemptedAtUtcEpochMs: Long? = null,
+    @ColumnInfo(name = "attempt_count_since_last_fire")
+    val attemptCountSinceLastFire: Int = 0,
     @ColumnInfo(name = "last_fired_at_utc_epoch_ms")
     val lastFiredAtUtcEpochMs: Long? = null,
+    @ColumnInfo(name = "had_timezone_fallback")
+    val hadTimezoneFallback: Boolean = false,
     @ColumnInfo(name = "created_at_utc_epoch_ms")
     val createdAtUtcEpochMs: Long = System.currentTimeMillis(),
     @ColumnInfo(name = "updated_at_utc_epoch_ms")

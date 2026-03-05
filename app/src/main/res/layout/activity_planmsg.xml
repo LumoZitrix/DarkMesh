@@ -75,6 +75,39 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp" />
 
+    <LinearLayout
+        android:id="@+id/delayPrecisionPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="#12000000"
+        android:orientation="vertical"
+        android:padding="8dp">
+
+        <TextView
+            android:id="@+id/txtDelayPrecisionTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Precisione/ritardi"
+            android:textStyle="bold"
+            tools:ignore="HardcodedText" />
+
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/switchLateFireWithinGrace"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:checked="true"
+            android:text="Invia anche se in ritardo (entro X min)"
+            tools:ignore="HardcodedText" />
+
+        <Spinner
+            android:id="@+id/spinnerGraceWindow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" />
+    </LinearLayout>
+
     <Button
         android:backgroundTint="#470202"
         android:textColor="#FFFFFF"

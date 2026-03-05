@@ -36,6 +36,13 @@ class PlannedMessageDatabaseModule {
     }
 
     @Provides
+    @Singleton
+    @PlannedMessageSettingsPrefs
+    fun providePlannedMessageSettingsPrefs(app: Application): SharedPreferences {
+        return app.getSharedPreferences(UserPrefs.PlannedMessage.SHARED_PLANMSG_PREFS_SETTINGS, Context.MODE_PRIVATE)
+    }
+
+    @Provides
     fun provideAlarmManager(app: Application): AlarmManager {
         return app.getSystemService(AlarmManager::class.java)
     }

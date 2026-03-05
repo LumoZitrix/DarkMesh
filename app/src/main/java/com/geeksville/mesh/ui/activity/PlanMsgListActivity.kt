@@ -6,24 +6,34 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.graphics.Color
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.Settings
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
 import android.util.Log
 import android.widget.ArrayAdapter
+import android.widget.Button
 import android.widget.ListView
 import android.widget.TextView
 import androidx.activity.viewModels
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
+import androidx.core.view.isVisible
+import androidx.lifecycle.lifecycleScope
 import com.emp3r0r7.darkmesh.R
 import com.geeksville.mesh.database.entity.NodeEntity
 import com.geeksville.mesh.plannedmessages.data.PlannedMessageDestinationSummary
 import com.geeksville.mesh.plannedmessages.ui.PlannedMessageListViewModel
 import com.geeksville.mesh.service.MeshService
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.ZoneId
 import java.util.concurrent.ConcurrentHashMap
 
 @AndroidEntryPoint
@@ -35,6 +45,8 @@ class PlanMsgListActivity : AppCompatActivity() {
     private lateinit var listView: ListView
     private lateinit var titleView: TextView
     private lateinit var plannerSwitch: SwitchCompat
+    private lateinit var exactAlarmBanner: android.view.View
+    private lateinit var exactAlarmBannerButton: Button
 
     private var summaries: List<PlannedMessageDestinationSummary> = emptyList()
     private var suppressSwitchCallback = false
@@ -46,14 +58,22 @@ class PlanMsgListActivity : AppCompatActivity() {
         listView = findViewById(R.id.listViewNodes)
         titleView = findViewById(R.id.planListTitle)
         plannerSwitch = findViewById(R.id.switchPlanning)
+        exactAlarmBanner = findViewById(R.id.exactAlarmBanner)
+        exactAlarmBannerButton = findViewById(R.id.exactAlarmBannerButton)
 
         bindMeshService()
         observeViewModel()
+        exactAlarmBannerButton.setOnClickListener { openExactAlarmSettings() }
+        titleView.setOnLongClickListener {
+            showDebugSnapshot()
+            true
+        }
     }
 
     override fun onResume() {
         super.onResume()
         renderList()
+        viewModel.refreshExactAlarmCapability()
     }
 
     override fun onDestroy() {
@@ -94,6 +114,9 @@ class PlanMsgListActivity : AppCompatActivity() {
             plannerSwitch.isChecked = enabled
             suppressSwitchCallback = false
             handleListVisibility(enabled)
+        }
+        viewModel.exactAlarmAvailable.observe(this) { canScheduleExact ->
+            renderExactAlarmBanner(canScheduleExact)
         }
 
         plannerSwitch.setOnCheckedChangeListener { _, isChecked ->
@@ -157,6 +180,55 @@ class PlanMsgListActivity : AppCompatActivity() {
     private fun handleListVisibility(serviceActive: Boolean) {
         listView.isEnabled = serviceActive
         listView.alpha = if (serviceActive) 1.0f else 0.5f
+    }
+
+    private fun renderExactAlarmBanner(canScheduleExactAlarms: Boolean) {
+        val shouldShow = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !canScheduleExactAlarms
+        exactAlarmBanner.isVisible = shouldShow
+    }
+
+    private fun openExactAlarmSettings() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        runCatching {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+            )
+        }.onFailure {
+            Log.w(TAG, "Unable to open exact alarm settings", it)
+        }
+    }
+
+    private fun showDebugSnapshot() {
+        lifecycleScope.launch {
+            val snapshot = viewModel.getDebugSnapshot()
+            val message = buildString {
+                appendLine("Exact alarms: ${if (snapshot.exactAlarmAvailable) "available" else "reduced precision"}")
+                appendLine("Late mode: ${snapshot.settings.lateFireMode}")
+                appendLine("Grace: ${snapshot.settings.skipMissedGraceMs / 60_000L} min")
+                appendLine("Catch-up burst max: ${snapshot.settings.maxCatchUpBurst}")
+                appendLine("Last alarm scheduled: ${formatUtc(snapshot.lastAlarmScheduledAtUtcMs)}")
+                appendLine("Last alarm fired: ${formatUtc(snapshot.lastAlarmFiredAtUtcMs)}")
+                appendLine("Last run: ${formatUtc(snapshot.lastRunAtUtcMs)}")
+                appendLine("Last claimed: ${snapshot.lastClaimedCount}")
+                appendLine("Last sent: ${snapshot.lastSentCount}")
+                append("Last error: ${snapshot.lastErrorReason ?: "none"}")
+            }
+            AlertDialog.Builder(this@PlanMsgListActivity)
+                .setTitle("Debug planned messages")
+                .setMessage(message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+        }
+    }
+
+    private fun formatUtc(epochMs: Long?): String {
+        if (epochMs == null) return "n/a"
+        return Instant.ofEpochMilli(epochMs)
+            .atZone(ZoneId.systemDefault())
+            .toLocalDateTime()
+            .toString()
     }
 
     companion object {

@@ -13,20 +13,19 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.emp3r0r7.darkmesh.R
-import com.geeksville.mesh.plannedmessages.data.PlannedMessageEntity
 import com.geeksville.mesh.plannedmessages.data.PlannedMessageRepository
 import com.geeksville.mesh.plannedmessages.domain.SchedulerEngine
 import com.geeksville.mesh.plannedmessages.orchestration.PlannedMessageScheduler
 import com.geeksville.mesh.service.MeshService
-import com.geeksville.mesh.service.startService
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import kotlin.coroutines.resume
@@ -43,6 +42,10 @@ class PlannedMessageSendService : Service() {
     @Inject
     lateinit var plannedMessageScheduler: PlannedMessageScheduler
 
+    private val executionCoordinator by lazy {
+        PlannedMessageExecutionCoordinator(repository, schedulerEngine)
+    }
+
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
 
@@ -54,7 +57,12 @@ class PlannedMessageSendService : Service() {
 
         startForeground(NOTIFICATION_ID, createNotification())
         serviceScope.launch {
-            executeDueMessages()
+            executionMutex.withLock {
+                runCatching { executeDueMessages() }
+                    .onFailure { throwable ->
+                        Log.w(TAG, "Planned message execution failed", throwable)
+                    }
+            }
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf(startId)
         }
@@ -63,56 +71,56 @@ class PlannedMessageSendService : Service() {
 
     private suspend fun executeDueMessages() {
         repository.bootstrap()
-        val boundMeshService = connectMeshService()
-        if (boundMeshService == null) {
-            Log.w(TAG, "MeshService unavailable for planned message execution")
-            plannedMessageScheduler.scheduleNextAlarm()
-            return
-        }
-
         try {
-            val sender: IMeshSender = MeshServicePlannedMessageSender(boundMeshService.meshService)
-            val nowUtcEpochMs = System.currentTimeMillis()
-            val dueMessages = repository.getDueMessages(nowUtcEpochMs)
-            if (dueMessages.isEmpty()) {
-                plannedMessageScheduler.scheduleNextAlarm()
+            val settings = repository.getSettings()
+            val claimNow = System.currentTimeMillis()
+            val claimedMessages = repository.claimDueMessages(
+                nowUtcEpochMs = claimNow,
+                leaseMs = CLAIM_LEASE_MS,
+            )
+            Log.i(TAG, "Claimed planned messages: ${claimedMessages.size}")
+            if (claimedMessages.isEmpty()) {
+                repository.recordExecutionRun(
+                    lastRunAtUtcEpochMs = System.currentTimeMillis(),
+                    claimedCount = 0,
+                    sentCount = 0,
+                    lastErrorReason = null,
+                )
                 return
             }
 
-            dueMessages.forEach { message ->
-                val now = System.currentTimeMillis()
-                val outcome = schedulerEngine.applyExecutionPolicy(message, now)
-                processMessageOutcome(message, outcome, now, sender)
+            val boundMeshService = connectMeshService()
+            val sender = boundMeshService?.let { MeshServicePlannedMessageSender(it.meshService) }
+            if (sender == null) {
+                Log.w(TAG, "MeshService unavailable for planned message execution, applying backoff")
+            }
+            try {
+                Log.d(
+                    TAG_ENGINE,
+                    "Applying policy lateMode=${settings.lateFireMode} graceMs=${settings.skipMissedGraceMs} claimed=${claimedMessages.size}",
+                )
+                val runResult = executionCoordinator.execute(
+                    claimedMessages = claimedMessages,
+                    settings = settings,
+                    sender = sender,
+                )
+                Log.i(
+                    TAG,
+                    "Planned message run summary claimed=${claimedMessages.size} sent=${runResult.sentCount} failed=${runResult.failedCount} skipped=${runResult.skippedCount}",
+                )
+                repository.recordExecutionRun(
+                    lastRunAtUtcEpochMs = System.currentTimeMillis(),
+                    claimedCount = claimedMessages.size,
+                    sentCount = runResult.sentCount,
+                    lastErrorReason = runResult.lastErrorReason,
+                )
+            } finally {
+                if (boundMeshService != null) {
+                    runCatching { unbindService(boundMeshService.connection) }
+                }
             }
         } finally {
-            runCatching { unbindService(boundMeshService.connection) }
-        }
-
-        plannedMessageScheduler.scheduleNextAlarm()
-    }
-
-    private suspend fun processMessageOutcome(
-        originalMessage: PlannedMessageEntity,
-        outcome: SchedulerEngine.ExecutionOutcome,
-        nowUtcEpochMs: Long,
-        sender: IMeshSender,
-    ) {
-        if (!outcome.shouldSend) {
-            repository.update(outcome.updatedMessage)
-            return
-        }
-
-        val accepted = sender.send(originalMessage)
-        if (accepted) {
-            repository.update(outcome.updatedMessage)
-        } else {
-            // Keep the same occurrence pending but avoid hot-loop retries.
-            repository.update(
-                originalMessage.copy(
-                    nextTriggerAtUtcEpochMs = nowUtcEpochMs + SEND_RETRY_DELAY_MS,
-                    updatedAtUtcEpochMs = nowUtcEpochMs,
-                )
-            )
+            plannedMessageScheduler.scheduleNextAlarm()
         }
     }
 
@@ -179,11 +187,13 @@ class PlannedMessageSendService : Service() {
     }
 
     companion object {
-        private const val TAG = "PlannedMsgExec"
+        private const val TAG = "PM_SEND"
         private const val CHANNEL_ID = "planned_message_execution"
         private const val NOTIFICATION_ID = 84018
         private const val MESH_BIND_TIMEOUT_MS = 10_000L
-        private const val SEND_RETRY_DELAY_MS = 60_000L
+        private const val CLAIM_LEASE_MS = 2 * 60 * 1000L
+        private const val TAG_ENGINE = "PM_ENGINE"
+        private val executionMutex = Mutex()
 
         const val ACTION_EXECUTE_DUE_MESSAGES = "com.geeksville.mesh.plannedmessages.EXECUTE"
 

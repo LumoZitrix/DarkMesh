@@ -49,7 +49,7 @@ class MeshServicePlannedMessageSender @Inject constructor(
     )
 
     companion object {
-        private const val TAG = "PlannedMsgMeshSender"
+        private const val TAG = "PM_SEND"
         private const val BROADCAST_KEY_TOKEN = "^all"
     }
 }

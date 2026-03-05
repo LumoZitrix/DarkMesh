@@ -9,3 +9,7 @@ annotation class PlannedMessageStatusPrefs
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class LegacyPlannedMessagePrefs
+
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class PlannedMessageSettingsPrefs

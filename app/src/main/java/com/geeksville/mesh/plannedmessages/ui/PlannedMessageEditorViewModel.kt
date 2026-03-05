@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.geeksville.mesh.plannedmessages.data.PlannedMessageDraft
 import com.geeksville.mesh.plannedmessages.data.PlannedMessageEntity
 import com.geeksville.mesh.plannedmessages.data.PlannedMessageRepository
+import com.geeksville.mesh.plannedmessages.domain.PlannedMessageSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -23,6 +24,9 @@ class PlannedMessageEditorViewModel @Inject constructor(
     private val _saveSuccess = MutableLiveData<Boolean?>()
     val saveSuccess: LiveData<Boolean?> = _saveSuccess
 
+    private val _settings = MutableLiveData(repository.getSettings())
+    val settings: LiveData<PlannedMessageSettings> = _settings
+
     fun observeByDestination(destinationKey: String): LiveData<List<PlannedMessageEntity>> {
         return repository.observeByDestination(destinationKey).asLiveData()
     }
@@ -30,6 +34,7 @@ class PlannedMessageEditorViewModel @Inject constructor(
     fun bootstrap() = viewModelScope.launch {
         repository.bootstrap()
         _plannerEnabled.postValue(repository.isPlannerEnabled())
+        _settings.postValue(repository.getSettings())
     }
 
     fun saveRules(destinationKey: String, drafts: List<PlannedMessageDraft>) {
@@ -46,5 +51,10 @@ class PlannedMessageEditorViewModel @Inject constructor(
 
     fun clearSaveState() {
         _saveSuccess.value = null
+    }
+
+    fun updateLateFireWithinGrace(enabled: Boolean, graceMs: Long) = viewModelScope.launch {
+        repository.updateLateFireWithinGrace(enabled, graceMs)
+        _settings.postValue(repository.getSettings())
     }
 }
