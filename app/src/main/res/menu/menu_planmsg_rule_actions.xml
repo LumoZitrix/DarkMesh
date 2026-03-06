@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/action_rule_edit"
+        android:title="Modifica" />
+    <item
+        android:id="@+id/action_rule_duplicate"
+        android:title="Duplica" />
+    <item
+        android:id="@+id/action_rule_toggle"
+        android:title="Abilita/Disabilita" />
+    <item
+        android:id="@+id/action_rule_delete"
+        android:title="Elimina" />
+</menu>

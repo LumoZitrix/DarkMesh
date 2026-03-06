@@ -1,413 +1,656 @@
 package com.geeksville.mesh.ui.activity
 
-import android.annotation.SuppressLint
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
-import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
-import android.content.ServiceConnection
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
-import android.os.IBinder
-import android.util.AttributeSet
-import android.util.Log
+import android.provider.Settings
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.LayoutInflater
+import android.view.MenuItem
 import android.view.View
-import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
-import android.widget.ListView
+import android.widget.PopupMenu
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.viewModels
-import androidx.appcompat.widget.SwitchCompat
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
 import androidx.core.view.isVisible
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.emp3r0r7.darkmesh.R
-import com.geeksville.mesh.database.entity.NodeEntity
-import com.geeksville.mesh.database.entity.QuickChatAction
 import com.geeksville.mesh.plannedmessages.data.PlannedMessageDraft
+import com.geeksville.mesh.plannedmessages.data.PlannedMessageEntity
 import com.geeksville.mesh.plannedmessages.domain.LateFireMode
 import com.geeksville.mesh.plannedmessages.domain.PlannedMessageDeliveryPolicy
-import com.geeksville.mesh.plannedmessages.domain.PlannedMessageSettings
 import com.geeksville.mesh.plannedmessages.domain.PlannedMessageScheduleType
+import com.geeksville.mesh.plannedmessages.domain.PlannedMessageSettings
+import com.geeksville.mesh.plannedmessages.domain.SchedulerEngine
 import com.geeksville.mesh.plannedmessages.domain.WeeklyDays
 import com.geeksville.mesh.plannedmessages.ui.PlannedMessageEditorViewModel
-import com.geeksville.mesh.service.MeshService
 import com.geeksville.mesh.service.QuickChatBridge
+import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
+import com.google.android.material.snackbar.Snackbar
 import dagger.hilt.android.AndroidEntryPoint
+import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 
 @AndroidEntryPoint
 class PlanMsgActivity : AppCompatActivity() {
 
     private val viewModel: PlannedMessageEditorViewModel by viewModels()
-    private var meshService: MeshService? = null
+    private val schedulerEngine = SchedulerEngine()
 
-    private lateinit var currentDestinationKey: String
-    private var currentNodeName: String = ""
-    private var broadcastChannel: Int? = null
-
-    private lateinit var spinnerScheduleType: Spinner
-    private lateinit var spinnerDay: Spinner
-    private lateinit var spinnerPolicy: Spinner
-    private lateinit var spinnerGraceWindow: Spinner
-    private lateinit var quickMessagesSpinner: NDSpinner
-    private lateinit var switchLateFireWithinGrace: SwitchCompat
-    private lateinit var btnDate: Button
-    private lateinit var btnTime: Button
+    private lateinit var destinationKey: String
+    private lateinit var plannerStatus: TextView
+    private lateinit var switchLateFire: SwitchCompat
+    private lateinit var spinnerGrace: Spinner
+    private lateinit var exactBanner: View
+    private lateinit var exactBannerButton: Button
+    private lateinit var recyclerRules: RecyclerView
+    private lateinit var emptyView: TextView
+    private lateinit var unsavedView: TextView
     private lateinit var btnAdd: Button
     private lateinit var btnSave: Button
-    private lateinit var inputMessage: EditText
-    private lateinit var listRules: ListView
+    private lateinit var btnDiscard: Button
 
-    private var selectedHour = -1
-    private var selectedMinute = -1
-    private var selectedDate: LocalDate = LocalDate.now()
-    private var suppressDelayPrecisionCallbacks = false
-    private var delayPrecisionInitialized = false
     private val rules = mutableListOf<RuleDraftUi>()
-    private val rulesAdapter by lazy {
-        ArrayAdapter(this, android.R.layout.simple_list_item_1, mutableListOf<String>())
+    private var persistedSnapshot: List<RuleDraftUi> = emptyList()
+    private var hasPendingChanges = false
+    private var isSaving = false
+    private var exactAlarmAvailable = true
+    private var settings = PlannedMessageSettings()
+    private var nextLocalId = -1L
+    private var suppressSettingsCallbacks = false
+    private var settingsUiInitialized = false
+
+    private val adapter by lazy {
+        PlanMsgRuleAdapter(
+            onRuleClick = { id -> showEditorDialog(id) },
+            onRuleActionClick = { anchor, id -> showRuleActions(anchor, id) },
+            onRuleEnabledChanged = { id, enabled -> toggleRuleEnabled(id, enabled) },
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_planmsg)
 
-        currentDestinationKey = intent.getStringExtra(NODE_ID_EXTRA_PARAM).orEmpty()
-        if (currentDestinationKey.isBlank() || currentDestinationKey.contains("Unknown Channel")) {
+        destinationKey = intent.getStringExtra(NODE_ID_EXTRA_PARAM).orEmpty()
+        if (destinationKey.isBlank()) {
             Toast.makeText(this, "Unable to retrieve destination id", Toast.LENGTH_LONG).show()
             finish()
             return
         }
-        currentNodeName = currentDestinationKey
 
-        parseDestinationMetadata()
-        bindMeshService()
         setupUi()
         observeViewModel()
         viewModel.bootstrap()
     }
 
-    private fun parseDestinationMetadata() {
-        if (!currentDestinationKey.contains(BROADCAST_ID_SIG)) return
-        val split = currentDestinationKey.split("^")
-        if (split.size >= 3) {
-            broadcastChannel = split[0].toIntOrNull()
-            currentNodeName = split[2]
+    override fun onResume() {
+        super.onResume()
+        viewModel.refreshExactAlarmCapability()
+    }
+
+    private fun setupUi() {
+        findViewById<TextView>(R.id.txtNodeId).text = "Planning $destinationKey"
+        plannerStatus = findViewById(R.id.plannerStatus)
+        switchLateFire = findViewById(R.id.switchLateFireWithinGrace)
+        spinnerGrace = findViewById(R.id.spinnerGraceWindow)
+        exactBanner = findViewById(R.id.exactAlarmBanner)
+        exactBannerButton = findViewById(R.id.exactAlarmBannerButton)
+        recyclerRules = findViewById(R.id.recyclerRules)
+        emptyView = findViewById(R.id.txtRulesEmpty)
+        unsavedView = findViewById(R.id.txtUnsavedChanges)
+        btnAdd = findViewById(R.id.btnAddRule)
+        btnSave = findViewById(R.id.btnSave)
+        btnDiscard = findViewById(R.id.btnDiscardChanges)
+
+        spinnerGrace.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            GRACE_WINDOW_OPTIONS_MS.map { "${it / 60_000L} min" },
+        )
+        switchLateFire.setOnCheckedChangeListener { _, enabled ->
+            if (suppressSettingsCallbacks || !settingsUiInitialized) return@setOnCheckedChangeListener
+            spinnerGrace.isEnabled = enabled
+            viewModel.updateLateFireWithinGrace(enabled, selectedGraceMs())
+        }
+        spinnerGrace.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressSettingsCallbacks || !settingsUiInitialized) return
+                viewModel.updateLateFireWithinGrace(switchLateFire.isChecked, selectedGraceMs())
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+        }
+
+        recyclerRules.layoutManager = LinearLayoutManager(this)
+        recyclerRules.adapter = adapter
+
+        btnAdd.setOnClickListener { showEditorDialog(null) }
+        btnSave.setOnClickListener {
+            if (!hasPendingChanges || isSaving) return@setOnClickListener
+            viewModel.saveRules(destinationKey, rules.map { it.toDraft() })
+        }
+        btnDiscard.setOnClickListener { discardChanges() }
+        exactBannerButton.setOnClickListener { openExactAlarmSettings() }
+    }
+
+    private fun observeViewModel() {
+        viewModel.plannerEnabled.observe(this) { enabled ->
+            plannerStatus.text = "Global Planner Status: ${if (enabled) "ON" else "OFF"}"
+            plannerStatus.setTextColor(
+                getColor(if (enabled) android.R.color.holo_green_dark else android.R.color.holo_red_dark),
+            )
+        }
+        viewModel.settings.observe(this) {
+            settings = it
+            renderSettings(it)
+            recomputeAllRules()
+        }
+        viewModel.exactAlarmAvailable.observe(this) { canExact ->
+            exactAlarmAvailable = canExact
+            exactBanner.isVisible = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !canExact
+            refreshRuleList()
+        }
+        viewModel.observeByDestination(destinationKey).observe(this) { entities ->
+            persistedSnapshot = entities.map { RuleDraftUi.fromEntity(it) }
+            nextLocalId = minOf(nextLocalId, (entities.minOfOrNull { it.id } ?: 0L) - 1L)
+            if (!hasPendingChanges) {
+                rules.clear()
+                rules += persistedSnapshot
+                sortRules()
+                refreshRuleList()
+            }
+        }
+        viewModel.saveInProgress.observe(this) { saving ->
+            isSaving = saving
+            btnSave.isEnabled = hasPendingChanges && !saving
+            btnSave.text = if (saving) "Saving..." else "Salva regole"
+            btnDiscard.isEnabled = hasPendingChanges && !saving
+            btnAdd.isEnabled = !saving
+        }
+        viewModel.saveSuccess.observe(this) { ok ->
+            when (ok) {
+                true -> {
+                    hasPendingChanges = false
+                    Toast.makeText(this, "Regole salvate", Toast.LENGTH_LONG).show()
+                    refreshPendingState()
+                }
+
+                false -> Toast.makeText(this, "Unable to save planned messages", Toast.LENGTH_LONG).show()
+                null -> Unit
+            }
+            if (ok != null) viewModel.clearSaveState()
         }
     }
 
-    @SuppressLint("SetTextI18n")
-    private fun setupUi() {
-        spinnerScheduleType = findViewById(R.id.spinnerScheduleType)
-        spinnerDay = findViewById(R.id.spinnerDay)
-        spinnerPolicy = findViewById(R.id.spinnerPolicy)
-        spinnerGraceWindow = findViewById(R.id.spinnerGraceWindow)
-        quickMessagesSpinner = findViewById(R.id.quick_messages)
-        switchLateFireWithinGrace = findViewById(R.id.switchLateFireWithinGrace)
-        btnDate = findViewById(R.id.btnDate)
-        btnTime = findViewById(R.id.btnTime)
-        btnAdd = findViewById(R.id.btnAdd)
-        btnSave = findViewById(R.id.btnSave)
-        inputMessage = findViewById(R.id.inputMessage)
-        listRules = findViewById(R.id.listRules)
+    private fun renderSettings(newSettings: PlannedMessageSettings) {
+        suppressSettingsCallbacks = true
+        val enabled = newSettings.lateFireMode != LateFireMode.SKIP
+        switchLateFire.isChecked = enabled
+        spinnerGrace.isEnabled = enabled
+        val idx = GRACE_WINDOW_OPTIONS_MS.indexOf(newSettings.skipMissedGraceMs).takeIf { it >= 0 } ?: DEFAULT_GRACE_INDEX
+        spinnerGrace.setSelection(idx, false)
+        suppressSettingsCallbacks = false
+        settingsUiInitialized = true
+    }
 
-        spinnerScheduleType.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            SCHEDULE_LABELS,
-        )
-        spinnerDay.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            DAYS,
-        )
-        spinnerPolicy.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            POLICY_LABELS,
-        )
-        spinnerGraceWindow.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            GRACE_WINDOW_LABELS,
-        )
+    private fun selectedGraceMs(): Long {
+        val idx = spinnerGrace.selectedItemPosition.coerceIn(0, GRACE_WINDOW_OPTIONS_MS.lastIndex)
+        return GRACE_WINDOW_OPTIONS_MS[idx]
+    }
 
-        listRules.adapter = rulesAdapter
-        listRules.setOnItemClickListener { _, _, position, _ ->
-            if (position in rules.indices) {
-                rules.removeAt(position)
-                refreshRulesList()
+    private fun showEditorDialog(localId: Long?) {
+        val existing = localId?.let { rules.firstOrNull { r -> r.localId == it } }
+        var selectedType = existing?.scheduleType ?: PlannedMessageScheduleType.WEEKLY
+        var daysMask = existing?.daysOfWeekMask ?: WeeklyDays.maskFor(DayOfWeek.MONDAY)
+        var hour = existing?.hourOfDay ?: Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        var minute = existing?.minuteOfHour ?: Calendar.getInstance().get(Calendar.MINUTE)
+        val zone = runCatching { ZoneId.of(existing?.timezoneId ?: ZoneId.systemDefault().id) }.getOrDefault(ZoneId.systemDefault())
+        var date = existing?.oneShotAtUtcEpochMs?.let { Instant.ofEpochMilli(it).atZone(zone).toLocalDate() } ?: LocalDate.now()
+        var policy = existing?.deliveryPolicy ?: PlannedMessageDeliveryPolicy.SKIP_MISSED
+
+        val root = LayoutInflater.from(this).inflate(R.layout.dialog_planmsg_rule_editor, null)
+        val toggle = root.findViewById<com.google.android.material.button.MaterialButtonToggleGroup>(R.id.toggleScheduleType)
+        val weeklySection = root.findViewById<View>(R.id.weeklySection)
+        val dayGroup = root.findViewById<ChipGroup>(R.id.chipGroupDays)
+        val quickGroup = root.findViewById<ChipGroup>(R.id.chipGroupQuickMessages)
+        val inputMessage = root.findViewById<EditText>(R.id.inputMessage)
+        val btnDate = root.findViewById<Button>(R.id.btnDate)
+        val btnTime = root.findViewById<Button>(R.id.btnTime)
+        val spinnerPolicy = root.findViewById<Spinner>(R.id.spinnerPolicy)
+        val switchEnabled = root.findViewById<SwitchCompat>(R.id.switchRuleEnabled)
+        val preview = root.findViewById<TextView>(R.id.txtRulePreview)
+        val occurrences = root.findViewById<TextView>(R.id.txtRuleOccurrences)
+
+        inputMessage.setText(existing?.messageText.orEmpty())
+        switchEnabled.isChecked = existing?.isEnabled ?: true
+        spinnerPolicy.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, POLICY_LABELS)
+        spinnerPolicy.setSelection(if (policy == PlannedMessageDeliveryPolicy.SKIP_MISSED) 0 else 1, false)
+
+        WeeklyDays.orderedDays.forEach { day ->
+            val chip = Chip(this).apply {
+                text = DAY_LABELS[day]
+                isCheckable = true
+                isChecked = WeeklyDays.contains(daysMask, day)
             }
-        }
-        setupQuickMessagesSpinner()
-
-        spinnerScheduleType.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val isOneShot = selectedScheduleType() == PlannedMessageScheduleType.ONE_SHOT
-                btnDate.isVisible = isOneShot
-                spinnerDay.isVisible = !isOneShot
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-        }
-
-        switchLateFireWithinGrace.setOnCheckedChangeListener { _, enabled ->
-            if (suppressDelayPrecisionCallbacks || !delayPrecisionInitialized) return@setOnCheckedChangeListener
-            spinnerGraceWindow.isEnabled = enabled
-            viewModel.updateLateFireWithinGrace(
-                enabled = enabled,
-                graceMs = selectedGraceWindowMs(),
-            )
-        }
-        spinnerGraceWindow.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (suppressDelayPrecisionCallbacks || !delayPrecisionInitialized) return
-                viewModel.updateLateFireWithinGrace(
-                    enabled = switchLateFireWithinGrace.isChecked,
-                    graceMs = selectedGraceWindowMs(),
+            chip.setOnCheckedChangeListener { _, checked ->
+                daysMask = if (checked) daysMask or WeeklyDays.maskFor(day) else daysMask and WeeklyDays.maskFor(day).inv()
+                refreshDialogPreview(
+                    preview = preview,
+                    occurrences = occurrences,
+                    message = inputMessage.text.toString(),
+                    scheduleType = selectedType,
+                    daysMask = daysMask,
+                    hour = hour,
+                    minute = minute,
+                    date = date,
+                    zone = zone,
+                    policy = policy,
+                    enabled = switchEnabled.isChecked,
                 )
             }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            dayGroup.addView(chip)
         }
 
+        QuickChatBridge.getQuickChats(applicationContext).take(8).forEach { quick ->
+            val chip = Chip(this).apply {
+                text = quick.name
+            }
+            chip.setOnClickListener { inputMessage.setText(quick.message) }
+            quickGroup.addView(chip)
+        }
+
+        fun updateDateText() {
+            btnDate.text = "Date: ${date.format(DATE_FORMAT)}"
+        }
+        fun updateTimeText() {
+            btnTime.text = String.format(Locale.getDefault(), "Time: %02d:%02d", hour, minute)
+        }
+        fun updateMode() {
+            val oneShot = selectedType == PlannedMessageScheduleType.ONE_SHOT
+            weeklySection.isVisible = !oneShot
+            btnDate.isVisible = oneShot
+            refreshDialogPreview(
+                preview = preview,
+                occurrences = occurrences,
+                message = inputMessage.text.toString(),
+                scheduleType = selectedType,
+                daysMask = daysMask,
+                hour = hour,
+                minute = minute,
+                date = date,
+                zone = zone,
+                policy = policy,
+                enabled = switchEnabled.isChecked,
+            )
+        }
+
+        updateDateText()
+        updateTimeText()
+        if (selectedType == PlannedMessageScheduleType.ONE_SHOT) toggle.check(R.id.btnTypeOneShot) else toggle.check(R.id.btnTypeWeekly)
+        updateMode()
+
+        toggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (!isChecked) return@addOnButtonCheckedListener
+            selectedType = if (checkedId == R.id.btnTypeOneShot) PlannedMessageScheduleType.ONE_SHOT else PlannedMessageScheduleType.WEEKLY
+            updateMode()
+        }
         btnDate.setOnClickListener {
             DatePickerDialog(
                 this,
-                { _, year, month, dayOfMonth ->
-                    selectedDate = LocalDate.of(year, month + 1, dayOfMonth)
-                    btnDate.text = "Date: ${selectedDate.format(DATE_FORMATTER)}"
+                { _, y, m, d ->
+                    date = LocalDate.of(y, m + 1, d)
+                    updateDateText()
+                    updateMode()
                 },
-                selectedDate.year,
-                selectedDate.monthValue - 1,
-                selectedDate.dayOfMonth,
+                date.year,
+                date.monthValue - 1,
+                date.dayOfMonth,
             ).show()
         }
-
         btnTime.setOnClickListener {
-            val now = Calendar.getInstance()
-            val hour = if (selectedHour >= 0) selectedHour else now.get(Calendar.HOUR_OF_DAY)
-            val minute = if (selectedMinute >= 0) selectedMinute else now.get(Calendar.MINUTE)
             TimePickerDialog(
                 this,
-                { _, hourOfDay, minuteOfHour ->
-                    selectedHour = hourOfDay
-                    selectedMinute = minuteOfHour
-                    btnTime.text = String.format(Locale.getDefault(), "Time: %02d:%02d", hourOfDay, minuteOfHour)
+                { _, h, min ->
+                    hour = h
+                    minute = min
+                    updateTimeText()
+                    updateMode()
                 },
                 hour,
                 minute,
                 true,
             ).show()
         }
-
-        btnAdd.setOnClickListener { addRuleFromInputs() }
-        btnSave.setOnClickListener {
-            viewModel.saveRules(
-                currentDestinationKey,
-                rules.map { it.toDraft() },
-            )
-        }
-        findViewById<TextView>(R.id.txtNodeId).text =
-            "Planning ${if (broadcastChannel != null) "Chan" else "Node"} $currentNodeName"
-    }
-
-    @SuppressLint("SetTextI18n")
-    private fun observeViewModel() {
-        val statusView = findViewById<TextView>(R.id.plannerStatus)
-        viewModel.plannerEnabled.observe(this) { enabled ->
-            statusView.text = "Global Planner Status: ${if (enabled) "ON" else "OFF"}"
-            statusView.setTextColor(getColor(if (enabled) android.R.color.holo_green_dark else android.R.color.holo_red_dark))
-        }
-        viewModel.settings.observe(this) { settings ->
-            renderDelayPrecisionSettings(settings)
-        }
-
-        viewModel.observeByDestination(currentDestinationKey).observe(this) { entities ->
-            rules.clear()
-            rules += entities.map { RuleDraftUi.fromEntity(it) }
-            refreshRulesList()
-        }
-
-        viewModel.saveSuccess.observe(this) { success ->
-            when (success) {
-                true -> Toast.makeText(this, "Plan saved successfully for $currentNodeName", Toast.LENGTH_LONG).show()
-                false -> Toast.makeText(this, "Unable to save planned messages", Toast.LENGTH_LONG).show()
-                null -> Unit
+        spinnerPolicy.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                policy = if (position == 0) PlannedMessageDeliveryPolicy.SKIP_MISSED else PlannedMessageDeliveryPolicy.CATCH_UP
+                updateMode()
             }
-            if (success != null) {
-                viewModel.clearSaveState()
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+        }
+        inputMessage.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) = updateMode()
+        })
+        switchEnabled.setOnCheckedChangeListener { _, _ -> updateMode() }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (existing == null) "Nuova regola" else "Modifica regola")
+            .setView(root)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(if (existing == null) "Aggiungi" else "Aggiorna", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val message = inputMessage.text.toString().trim()
+                if (message.isBlank()) {
+                    inputMessage.error = "Inserisci un messaggio"
+                    return@setOnClickListener
+                }
+                if (selectedType == PlannedMessageScheduleType.WEEKLY && daysMask == 0) {
+                    Toast.makeText(this, "Seleziona almeno un giorno", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val oneShotAt = if (selectedType == PlannedMessageScheduleType.ONE_SHOT) {
+                    date.atTime(hour, minute).atZone(zone).toInstant().toEpochMilli()
+                } else {
+                    null
+                }
+                val base = RuleDraftUi(
+                    localId = existing?.localId ?: allocateLocalId(),
+                    databaseId = existing?.databaseId,
+                    messageText = message,
+                    scheduleType = selectedType,
+                    daysOfWeekMask = if (selectedType == PlannedMessageScheduleType.WEEKLY) daysMask else 0,
+                    hourOfDay = hour,
+                    minuteOfHour = minute,
+                    oneShotAtUtcEpochMs = oneShotAt,
+                    timezoneId = zone.id,
+                    deliveryPolicy = policy,
+                    isEnabled = switchEnabled.isChecked,
+                    nextTriggerAtUtcEpochMs = existing?.nextTriggerAtUtcEpochMs,
+                    hadTimezoneFallback = existing?.hadTimezoneFallback ?: false,
+                    attemptCountSinceLastFire = existing?.attemptCountSinceLastFire ?: 0,
+                    lastFiredAtUtcEpochMs = existing?.lastFiredAtUtcEpochMs,
+                    lastAttemptedAtUtcEpochMs = existing?.lastAttemptedAtUtcEpochMs,
+                )
+                upsertRule(recomputeRule(base))
+                dialog.dismiss()
             }
         }
+        dialog.show()
     }
 
-    private fun renderDelayPrecisionSettings(settings: PlannedMessageSettings) {
-        suppressDelayPrecisionCallbacks = true
-        val enabled = settings.lateFireMode != LateFireMode.SKIP
-        switchLateFireWithinGrace.isChecked = enabled
-        spinnerGraceWindow.isEnabled = enabled
-        val selectedIndex = GRACE_WINDOW_OPTIONS_MS.indexOf(settings.skipMissedGraceMs)
-            .takeIf { it >= 0 }
-            ?: DEFAULT_GRACE_INDEX
-        spinnerGraceWindow.setSelection(selectedIndex, false)
-        suppressDelayPrecisionCallbacks = false
-        delayPrecisionInitialized = true
-    }
-
-    private fun refreshRulesList() {
-        rulesAdapter.clear()
-        rulesAdapter.addAll(rules.map { it.toDisplayString() })
-        rulesAdapter.notifyDataSetChanged()
-    }
-
-    private fun addRuleFromInputs() {
-        if (selectedHour < 0 || selectedMinute < 0) {
-            Toast.makeText(this, "Select a time", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val message = inputMessage.text.toString().trim()
-        if (message.isEmpty()) {
-            Toast.makeText(this, "Add a message", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val scheduleType = selectedScheduleType()
-        val zoneId = ZoneId.systemDefault().id
-        val policy = selectedDeliveryPolicy()
-        val rule = if (scheduleType == PlannedMessageScheduleType.ONE_SHOT) {
+    private fun refreshDialogPreview(
+        preview: TextView,
+        occurrences: TextView,
+        message: String,
+        scheduleType: PlannedMessageScheduleType,
+        daysMask: Int,
+        hour: Int,
+        minute: Int,
+        date: LocalDate,
+        zone: ZoneId,
+        policy: PlannedMessageDeliveryPolicy,
+        enabled: Boolean,
+    ) {
+        val draft = recomputeRule(
             RuleDraftUi(
-                messageText = message,
+                localId = Long.MIN_VALUE,
+                databaseId = null,
+                messageText = message.trim(),
                 scheduleType = scheduleType,
-                daysOfWeekMask = 0,
-                hourOfDay = selectedHour,
-                minuteOfHour = selectedMinute,
-                oneShotAtUtcEpochMs = selectedDate
-                    .atTime(selectedHour, selectedMinute)
-                    .atZone(ZoneId.of(zoneId))
-                    .toInstant()
-                    .toEpochMilli(),
-                timezoneId = zoneId,
+                daysOfWeekMask = daysMask,
+                hourOfDay = hour,
+                minuteOfHour = minute,
+                oneShotAtUtcEpochMs = if (scheduleType == PlannedMessageScheduleType.ONE_SHOT) date.atTime(hour, minute).atZone(zone).toInstant().toEpochMilli() else null,
+                timezoneId = zone.id,
                 deliveryPolicy = policy,
-            )
-        } else {
-            RuleDraftUi(
-                messageText = message,
-                scheduleType = scheduleType,
-                daysOfWeekMask = WeeklyDays.maskFor(DAY_OF_WEEK_FROM_INDEX[spinnerDay.selectedItemPosition]),
-                hourOfDay = selectedHour,
-                minuteOfHour = selectedMinute,
-                oneShotAtUtcEpochMs = null,
-                timezoneId = zoneId,
-                deliveryPolicy = policy,
-            )
-        }
-
-        rules += rule
-        inputMessage.setText("")
-        refreshRulesList()
-    }
-
-    private fun selectedScheduleType(): PlannedMessageScheduleType {
-        return if (spinnerScheduleType.selectedItemPosition == 0) {
-            PlannedMessageScheduleType.WEEKLY
-        } else {
-            PlannedMessageScheduleType.ONE_SHOT
-        }
-    }
-
-    private fun selectedDeliveryPolicy(): PlannedMessageDeliveryPolicy {
-        return if (spinnerPolicy.selectedItemPosition == 0) {
-            PlannedMessageDeliveryPolicy.SKIP_MISSED
-        } else {
-            PlannedMessageDeliveryPolicy.CATCH_UP
-        }
-    }
-
-    private fun selectedGraceWindowMs(): Long {
-        val index = spinnerGraceWindow.selectedItemPosition
-            .coerceIn(0, GRACE_WINDOW_OPTIONS_MS.lastIndex)
-        return GRACE_WINDOW_OPTIONS_MS[index]
-    }
-
-    @SuppressLint("SetTextI18n")
-    private fun bindMeshService() {
-        val intent = Intent(this, MeshService::class.java).apply {
-            action = MeshService.BIND_LOCAL_ACTION_INTENT
-        }
-        bindService(intent, meshServiceConnection, Context.BIND_AUTO_CREATE)
-    }
-
-    private val meshServiceConnection = object : ServiceConnection {
-        override fun onServiceConnected(componentName: ComponentName, service: IBinder) {
-            val accessor = service as? MeshService.MeshServiceAccessor ?: return
-            meshService = accessor.getService()
-            resolveCurrentNodeName()
-            val description = "Planning ${if (broadcastChannel != null) "Chan" else "Node"} $currentNodeName"
-            findViewById<TextView>(R.id.txtNodeId).text = description
-        }
-
-        override fun onServiceDisconnected(componentName: ComponentName) {
-            meshService = null
-        }
-    }
-
-    private fun resolveCurrentNodeName() {
-        val nodeMap: ConcurrentHashMap<Int, NodeEntity> = meshService?.nodeDBbyNodeNum ?: return
-        val node = nodeMap[currentDestinationKey.toIntOrNull() ?: return]
-        if (!node?.user?.longName.isNullOrBlank()) {
-            currentNodeName = node?.user?.longName ?: currentNodeName
-        }
-    }
-
-    private fun setupQuickMessagesSpinner() {
-        val quickChats: List<QuickChatAction> = QuickChatBridge.getQuickChats(applicationContext)
-        val displayStrings = mutableListOf("Select a quick chat command...")
-        val messages = mutableListOf("")
-        quickChats.forEach { action ->
-            displayStrings += "${action.name}: ${action.message}"
-            messages += action.message
-        }
-
-        val adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_item,
-            displayStrings,
+                isEnabled = enabled,
+                nextTriggerAtUtcEpochMs = null,
+                hadTimezoneFallback = false,
+                attemptCountSinceLastFire = 0,
+                lastFiredAtUtcEpochMs = null,
+                lastAttemptedAtUtcEpochMs = null,
+            ),
         )
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        quickMessagesSpinner.adapter = adapter
-        quickMessagesSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (position == 0) {
-                    inputMessage.setText("")
-                    return
-                }
-                val selectedMessage = messages[position]
-                if (inputMessage.text.toString().trim() != selectedMessage) {
-                    inputMessage.setText(selectedMessage)
-                }
+        preview.text = if (draft.scheduleType == PlannedMessageScheduleType.ONE_SHOT) {
+            "Invierà una volta il ${draft.oneShotAtUtcEpochMs?.let { formatDateTime(it) } ?: "n/a"}"
+        } else {
+            "Invierà ogni ${formatDays(draft.daysOfWeekMask)} alle ${formatTime(draft.hourOfDay, draft.minuteOfHour)}"
+        }
+        val next = nextOccurrences(draft, 3)
+        occurrences.text = if (next.isEmpty()) "Prossime occorrenze: nessuna" else "Prossime occorrenze: ${next.joinToString(" | ") { formatDateTime(it) }}"
+    }
+
+    private fun showRuleActions(anchor: View, localId: Long) {
+        val rule = rules.firstOrNull { it.localId == localId } ?: return
+        PopupMenu(this, anchor).apply {
+            inflate(R.menu.menu_planmsg_rule_actions)
+            menu.findItem(R.id.action_rule_toggle).title = if (rule.isEnabled) "Disabilita" else "Abilita"
+            setOnMenuItemClickListener { handleRuleAction(it, localId) }
+            show()
+        }
+    }
+    private fun handleRuleAction(item: MenuItem, localId: Long): Boolean {
+        return when (item.itemId) {
+            R.id.action_rule_edit -> {
+                showEditorDialog(localId)
+                true
             }
 
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            R.id.action_rule_duplicate -> {
+                val source = rules.firstOrNull { it.localId == localId } ?: return false
+                upsertRule(
+                    recomputeRule(
+                        source.copy(
+                            localId = allocateLocalId(),
+                            databaseId = null,
+                            attemptCountSinceLastFire = 0,
+                            lastFiredAtUtcEpochMs = null,
+                            lastAttemptedAtUtcEpochMs = null,
+                            messageText = "${source.messageText} (copy)",
+                        ),
+                    ),
+                )
+                true
+            }
+
+            R.id.action_rule_toggle -> {
+                val source = rules.firstOrNull { it.localId == localId } ?: return false
+                toggleRuleEnabled(localId, !source.isEnabled)
+                true
+            }
+
+            R.id.action_rule_delete -> {
+                confirmDelete(localId)
+                true
+            }
+
+            else -> false
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        runCatching { unbindService(meshServiceConnection) }
-            .onFailure { Log.w(TAG, "Tried to unbind but service was already unbound", it) }
+    private fun confirmDelete(localId: Long) {
+        val index = rules.indexOfFirst { it.localId == localId }
+        if (index < 0) return
+        AlertDialog.Builder(this)
+            .setTitle("Elimina regola")
+            .setMessage("Vuoi eliminare questa regola?")
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val removed = rules.removeAt(index)
+                markRulesChanged()
+                Snackbar.make(findViewById(R.id.planMsgRoot), "Regola eliminata", Snackbar.LENGTH_LONG)
+                    .setAction("Undo") {
+                        rules.add(index.coerceIn(0, rules.size), removed)
+                        markRulesChanged()
+                    }
+                    .show()
+            }
+            .show()
     }
 
-    data class RuleDraftUi(
+    private fun toggleRuleEnabled(localId: Long, enabled: Boolean) {
+        val index = rules.indexOfFirst { it.localId == localId }
+        if (index < 0) return
+        val current = rules[index]
+        if (current.isEnabled == enabled) return
+        rules[index] = recomputeRule(current.copy(isEnabled = enabled))
+        markRulesChanged()
+    }
+
+    private fun upsertRule(rule: RuleDraftUi) {
+        val index = rules.indexOfFirst { it.localId == rule.localId }
+        if (index >= 0) rules[index] = rule else rules += rule
+        markRulesChanged()
+    }
+
+    private fun markRulesChanged() {
+        hasPendingChanges = true
+        sortRules()
+        refreshRuleList()
+        refreshPendingState()
+    }
+
+    private fun discardChanges() {
+        if (!hasPendingChanges || isSaving) return
+        AlertDialog.Builder(this)
+            .setTitle("Annulla modifiche")
+            .setMessage("Vuoi scartare le modifiche non salvate?")
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                hasPendingChanges = false
+                rules.clear()
+                rules += persistedSnapshot
+                sortRules()
+                refreshRuleList()
+                refreshPendingState()
+            }
+            .show()
+    }
+
+    private fun refreshPendingState() {
+        unsavedView.isVisible = hasPendingChanges
+        btnSave.isEnabled = hasPendingChanges && !isSaving
+        btnDiscard.isEnabled = hasPendingChanges && !isSaving
+    }
+
+    private fun refreshRuleList() {
+        adapter.submitList(rules.map { it.toCardModel(exactAlarmAvailable) })
+        val hasRules = rules.isNotEmpty()
+        recyclerRules.isVisible = hasRules
+        emptyView.isVisible = !hasRules
+    }
+
+    private fun sortRules() {
+        rules.sortWith(
+            compareBy<RuleDraftUi>(
+                { if (it.isEnabled && it.nextTriggerAtUtcEpochMs != null) 0 else if (it.isEnabled) 1 else 2 },
+                { it.nextTriggerAtUtcEpochMs ?: Long.MAX_VALUE },
+                { it.oneShotAtUtcEpochMs ?: Long.MAX_VALUE },
+                { it.localId },
+            ),
+        )
+    }
+
+    private fun recomputeAllRules() {
+        if (rules.isEmpty()) return
+        for (i in rules.indices) rules[i] = recomputeRule(rules[i])
+        sortRules()
+        refreshRuleList()
+    }
+
+    private fun recomputeRule(rule: RuleDraftUi): RuleDraftUi {
+        val resolved = schedulerEngine.initializeForScheduling(rule.toComputationEntity(), System.currentTimeMillis(), settings)
+        return rule.copy(
+            isEnabled = resolved.isEnabled,
+            nextTriggerAtUtcEpochMs = resolved.nextTriggerAtUtcEpochMs,
+            hadTimezoneFallback = resolved.hadTimezoneFallback,
+        )
+    }
+
+    private fun nextOccurrences(rule: RuleDraftUi, maxCount: Int): List<Long> {
+        if (!rule.isEnabled || maxCount <= 0) return emptyList()
+        val now = System.currentTimeMillis()
+        return when (rule.scheduleType) {
+            PlannedMessageScheduleType.ONE_SHOT -> listOfNotNull(rule.oneShotAtUtcEpochMs).filter { it >= now }.take(maxCount)
+            PlannedMessageScheduleType.WEEKLY -> {
+                if (rule.daysOfWeekMask == 0) return emptyList()
+                val zone = runCatching { ZoneId.of(rule.timezoneId) }.getOrDefault(ZoneId.systemDefault())
+                val time = LocalTime.of(rule.hourOfDay, rule.minuteOfHour)
+                val start = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+                buildList {
+                    for (offset in 0..30) {
+                        if (size >= maxCount) break
+                        val day = start.plusDays(offset.toLong())
+                        if (!WeeklyDays.contains(rule.daysOfWeekMask, day.dayOfWeek)) continue
+                        val candidate = LocalDateTime.of(day, time).atZone(zone).toInstant().toEpochMilli()
+                        if (candidate >= now) add(candidate)
+                    }
+                }
+            }
+        }
+    }
+    private fun formatDays(mask: Int): String {
+        return WeeklyDays.orderedDays
+            .filter { WeeklyDays.contains(mask, it) }
+            .mapNotNull { DAY_LABELS[it] }
+            .ifEmpty { listOf("n/a") }
+            .joinToString(", ")
+    }
+
+    private fun formatDateTime(epochMs: Long): String {
+        return Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(DATE_TIME_FORMAT)
+    }
+
+    private fun formatTime(hour: Int, minute: Int): String {
+        return String.format(Locale.getDefault(), "%02d:%02d", hour, minute)
+    }
+
+    private fun openExactAlarmSettings() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        runCatching {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                    data = Uri.parse("package:$packageName")
+                },
+            )
+        }
+    }
+
+    private fun allocateLocalId(): Long {
+        val id = nextLocalId
+        nextLocalId -= 1L
+        return id
+    }
+
+    private data class RuleDraftUi(
+        val localId: Long,
+        val databaseId: Long?,
         val messageText: String,
         val scheduleType: PlannedMessageScheduleType,
         val daysOfWeekMask: Int,
@@ -416,6 +659,12 @@ class PlanMsgActivity : AppCompatActivity() {
         val oneShotAtUtcEpochMs: Long?,
         val timezoneId: String,
         val deliveryPolicy: PlannedMessageDeliveryPolicy,
+        val isEnabled: Boolean,
+        val nextTriggerAtUtcEpochMs: Long?,
+        val hadTimezoneFallback: Boolean,
+        val attemptCountSinceLastFire: Int,
+        val lastFiredAtUtcEpochMs: Long?,
+        val lastAttemptedAtUtcEpochMs: Long?,
     ) {
         fun toDraft(): PlannedMessageDraft {
             return PlannedMessageDraft(
@@ -427,26 +676,84 @@ class PlanMsgActivity : AppCompatActivity() {
                 oneShotAtUtcEpochMs = oneShotAtUtcEpochMs,
                 timezoneId = timezoneId,
                 deliveryPolicy = deliveryPolicy,
+                isEnabled = isEnabled,
             )
         }
 
-        fun toDisplayString(): String {
-            val policyText = if (deliveryPolicy == PlannedMessageDeliveryPolicy.SKIP_MISSED) "skip" else "catch-up"
-            return if (scheduleType == PlannedMessageScheduleType.ONE_SHOT) {
-                val whenText = oneShotAtUtcEpochMs?.let {
-                    Instant.ofEpochMilli(it).atZone(ZoneId.of(timezoneId))
-                        .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-                } ?: "unknown"
-                "ONCE $whenText - $messageText [$policyText]"
-            } else {
-                val dayLabel = DAYS[DAY_INDEX_FROM_MASK[daysOfWeekMask] ?: 0]
-                "$dayLabel ${"%02d:%02d".format(hourOfDay, minuteOfHour)} - $messageText [$policyText]"
+        fun toComputationEntity(): PlannedMessageEntity {
+            return PlannedMessageEntity(
+                id = databaseId ?: 0L,
+                destinationKey = "",
+                messageText = messageText,
+                scheduleType = scheduleType,
+                daysOfWeekMask = daysOfWeekMask,
+                hourOfDay = hourOfDay,
+                minuteOfHour = minuteOfHour,
+                oneShotAtUtcEpochMs = oneShotAtUtcEpochMs,
+                timezoneId = timezoneId,
+                deliveryPolicy = deliveryPolicy,
+                isEnabled = isEnabled,
+                nextTriggerAtUtcEpochMs = nextTriggerAtUtcEpochMs,
+                attemptCountSinceLastFire = attemptCountSinceLastFire,
+                lastFiredAtUtcEpochMs = lastFiredAtUtcEpochMs,
+                lastAttemptedAtUtcEpochMs = lastAttemptedAtUtcEpochMs,
+                hadTimezoneFallback = hadTimezoneFallback,
+            )
+        }
+
+        fun toCardModel(exactAlarmAvailable: Boolean): PlanMsgRuleCardModel {
+            fun formatEpoch(epochMs: Long): String {
+                return Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(DATE_TIME_FORMAT)
             }
+            fun formatMask(mask: Int): String {
+                return WeeklyDays.orderedDays
+                    .filter { WeeklyDays.contains(mask, it) }
+                    .map { day ->
+                        when (day) {
+                            DayOfWeek.MONDAY -> "Lun"
+                            DayOfWeek.TUESDAY -> "Mar"
+                            DayOfWeek.WEDNESDAY -> "Mer"
+                            DayOfWeek.THURSDAY -> "Gio"
+                            DayOfWeek.FRIDAY -> "Ven"
+                            DayOfWeek.SATURDAY -> "Sab"
+                            DayOfWeek.SUNDAY -> "Dom"
+                        }
+                    }
+                    .ifEmpty { listOf("n/a") }
+                    .joinToString(", ")
+            }
+            val schedule = if (scheduleType == PlannedMessageScheduleType.ONE_SHOT) {
+                "One-shot - ${oneShotAtUtcEpochMs?.let { formatEpoch(it) } ?: "n/a"}"
+            } else {
+                "Weekly - ${formatMask(daysOfWeekMask)} ${String.format(Locale.getDefault(), "%02d:%02d", hourOfDay, minuteOfHour)}"
+            }
+            val next = when {
+                isEnabled && nextTriggerAtUtcEpochMs != null -> "Prossima esecuzione: ${formatEpoch(nextTriggerAtUtcEpochMs)}"
+                isEnabled -> "Prossima esecuzione: non disponibile"
+                else -> "Regola disabilitata"
+            }
+            val warns = buildList {
+                if (!exactAlarmAvailable && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add("Precisione ridotta")
+                if (hadTimezoneFallback) add("Timezone fallback")
+                if (attemptCountSinceLastFire > 0) add("Tentativi: $attemptCountSinceLastFire")
+            }.joinToString(" - ").ifBlank { null }
+            return PlanMsgRuleCardModel(
+                localId = localId,
+                messagePreview = messageText,
+                scheduleSummary = schedule,
+                nextRunSummary = next,
+                policySummary = "Policy ritardi: ${if (deliveryPolicy == PlannedMessageDeliveryPolicy.SKIP_MISSED) "Skip missed" else "Catch up"}",
+                statusSummary = if (isEnabled) "Stato: Abilitata" else "Stato: Disabilitata",
+                warningsSummary = warns,
+                isEnabled = isEnabled,
+            )
         }
 
         companion object {
-            fun fromEntity(entity: com.geeksville.mesh.plannedmessages.data.PlannedMessageEntity): RuleDraftUi {
+            fun fromEntity(entity: PlannedMessageEntity): RuleDraftUi {
                 return RuleDraftUi(
+                    localId = entity.id,
+                    databaseId = entity.id,
                     messageText = entity.messageText,
                     scheduleType = entity.scheduleType,
                     daysOfWeekMask = entity.daysOfWeekMask,
@@ -455,50 +762,39 @@ class PlanMsgActivity : AppCompatActivity() {
                     oneShotAtUtcEpochMs = entity.oneShotAtUtcEpochMs,
                     timezoneId = entity.timezoneId,
                     deliveryPolicy = entity.deliveryPolicy,
+                    isEnabled = entity.isEnabled,
+                    nextTriggerAtUtcEpochMs = entity.nextTriggerAtUtcEpochMs,
+                    hadTimezoneFallback = entity.hadTimezoneFallback,
+                    attemptCountSinceLastFire = entity.attemptCountSinceLastFire,
+                    lastFiredAtUtcEpochMs = entity.lastFiredAtUtcEpochMs,
+                    lastAttemptedAtUtcEpochMs = entity.lastAttemptedAtUtcEpochMs,
                 )
             }
         }
     }
 
-    class NDSpinner @JvmOverloads constructor(
-        context: Context,
-        attrs: AttributeSet? = null,
-        defStyleAttr: Int = 0,
-    ) : androidx.appcompat.widget.AppCompatSpinner(context, attrs, defStyleAttr) {
-        override fun setSelection(position: Int, animate: Boolean) {
-            val same = position == selectedItemPosition
-            super.setSelection(position, animate)
-            if (same) {
-                onItemSelectedListener?.onItemSelected(this, selectedView, position, selectedItemId)
-            }
-        }
-
-        override fun setSelection(position: Int) {
-            val same = position == selectedItemPosition
-            super.setSelection(position)
-            if (same) {
-                onItemSelectedListener?.onItemSelected(this, selectedView, position, selectedItemId)
-            }
-        }
-    }
-
     companion object {
-        private const val TAG = "PlanMsgActivity"
         const val NODE_ID_EXTRA_PARAM = "nodeId"
         const val BROADCAST_ID_SIG = "^all"
         const val SEPARATOR_DATE_MSG = "-"
-        val DAYS = arrayOf("LUN", "MAR", "MER", "GIO", "VEN", "SAB", "DOM")
-        private val DAY_OF_WEEK_FROM_INDEX = WeeklyDays.orderedDays
-        private val DAY_INDEX_FROM_MASK = DAY_OF_WEEK_FROM_INDEX
-            .mapIndexed { index, day -> WeeklyDays.maskFor(day) to index }
-            .toMap()
-        private val SCHEDULE_LABELS = listOf("Weekly", "One-shot")
-        private val POLICY_LABELS = listOf("Skip missed", "Catch up")
+
         private val GRACE_WINDOW_OPTIONS_MS = PlannedMessageSettings.ALLOWED_GRACE_WINDOWS_MS
-        private val GRACE_WINDOW_LABELS = GRACE_WINDOW_OPTIONS_MS.map { "${it / 60_000L} min" }
         private val DEFAULT_GRACE_INDEX = GRACE_WINDOW_OPTIONS_MS
             .indexOf(PlannedMessageSettings.DEFAULT_SKIP_MISSED_GRACE_MS)
             .takeIf { it >= 0 } ?: 0
-        private val DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+        private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+        private val DATE_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+        private val DAY_LABELS = mapOf(
+            DayOfWeek.MONDAY to "Lun",
+            DayOfWeek.TUESDAY to "Mar",
+            DayOfWeek.WEDNESDAY to "Mer",
+            DayOfWeek.THURSDAY to "Gio",
+            DayOfWeek.FRIDAY to "Ven",
+            DayOfWeek.SATURDAY to "Sab",
+            DayOfWeek.SUNDAY to "Dom",
+        )
+        private val POLICY_LABELS = listOf("Skip missed", "Catch up")
+
     }
 }
+

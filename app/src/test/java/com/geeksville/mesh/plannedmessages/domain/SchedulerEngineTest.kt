@@ -189,6 +189,63 @@ class SchedulerEngineTest {
     }
 
     @Test
+    fun `weekly skipped beyond grace advances to next occurrence without touching last fired`() {
+        val zoneId = ZoneId.of("Europe/Rome")
+        val due = LocalDate.of(2026, 1, 5).atTime(8, 0).atZone(zoneId).toInstant().toEpochMilli() // Monday
+        val now = due + 90 * 60 * 1000L // +90 minutes, beyond 15m grace
+        val message = weeklyMessage(
+            day = DayOfWeek.MONDAY,
+            hour = 8,
+            minute = 0,
+            timezoneId = zoneId.id,
+            policy = PlannedMessageDeliveryPolicy.SKIP_MISSED,
+        ).copy(
+            nextTriggerAtUtcEpochMs = due,
+            lastFiredAtUtcEpochMs = null,
+        )
+        val settings = PlannedMessageSettings(
+            skipMissedGraceMs = 15 * 60 * 1000L,
+            lateFireMode = LateFireMode.FIRE_IF_WITHIN_GRACE,
+        )
+
+        val outcome = engine.applyExecutionPolicy(
+            message = message,
+            nowUtcEpochMs = now,
+            settings = settings,
+        )
+
+        assertFalse(outcome.shouldSend)
+        assertEquals(null, outcome.updatedMessage.lastFiredAtUtcEpochMs)
+        val nextLocal = Instant.ofEpochMilli(outcome.updatedMessage.nextTriggerAtUtcEpochMs!!).atZone(zoneId)
+        assertEquals(LocalDate.of(2026, 1, 12), nextLocal.toLocalDate())
+        assertEquals(8, nextLocal.hour)
+        assertEquals(0, nextLocal.minute)
+    }
+
+    @Test
+    fun `late fire mode immediately sends even beyond grace`() {
+        val due = Instant.parse("2026-01-01T10:00:00Z").toEpochMilli()
+        val lateByTwoHours = due + 2 * 60 * 60 * 1000L
+        val message = oneShotMessage(
+            oneShotAt = due,
+            policy = PlannedMessageDeliveryPolicy.SKIP_MISSED,
+        ).copy(nextTriggerAtUtcEpochMs = due)
+        val settings = PlannedMessageSettings(
+            skipMissedGraceMs = 5 * 60 * 1000L,
+            lateFireMode = LateFireMode.FIRE_IMMEDIATELY,
+        )
+
+        val outcome = engine.applyExecutionPolicy(
+            message = message,
+            nowUtcEpochMs = lateByTwoHours,
+            settings = settings,
+        )
+
+        assertTrue(outcome.shouldSend)
+        assertFalse(outcome.updatedMessage.isEnabled)
+    }
+
+    @Test
     fun `invalid timezone falls back to system zone and marks entity`() {
         val now = Instant.parse("2026-01-01T12:00:00Z").toEpochMilli()
         val message = weeklyMessage(

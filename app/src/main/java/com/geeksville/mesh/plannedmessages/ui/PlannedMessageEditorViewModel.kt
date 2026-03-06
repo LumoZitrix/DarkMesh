@@ -23,9 +23,13 @@ class PlannedMessageEditorViewModel @Inject constructor(
 
     private val _saveSuccess = MutableLiveData<Boolean?>()
     val saveSuccess: LiveData<Boolean?> = _saveSuccess
+    private val _saveInProgress = MutableLiveData(false)
+    val saveInProgress: LiveData<Boolean> = _saveInProgress
 
     private val _settings = MutableLiveData(repository.getSettings())
     val settings: LiveData<PlannedMessageSettings> = _settings
+    private val _exactAlarmAvailable = MutableLiveData(repository.canScheduleExactAlarms())
+    val exactAlarmAvailable: LiveData<Boolean> = _exactAlarmAvailable
 
     fun observeByDestination(destinationKey: String): LiveData<List<PlannedMessageEntity>> {
         return repository.observeByDestination(destinationKey).asLiveData()
@@ -35,16 +39,20 @@ class PlannedMessageEditorViewModel @Inject constructor(
         repository.bootstrap()
         _plannerEnabled.postValue(repository.isPlannerEnabled())
         _settings.postValue(repository.getSettings())
+        _exactAlarmAvailable.postValue(repository.canScheduleExactAlarms())
     }
 
     fun saveRules(destinationKey: String, drafts: List<PlannedMessageDraft>) {
         viewModelScope.launch {
+            _saveInProgress.postValue(true)
             runCatching {
                 repository.replaceForDestination(destinationKey, drafts)
             }.onSuccess {
                 _saveSuccess.postValue(true)
             }.onFailure {
                 _saveSuccess.postValue(false)
+            }.also {
+                _saveInProgress.postValue(false)
             }
         }
     }
@@ -56,5 +64,9 @@ class PlannedMessageEditorViewModel @Inject constructor(
     fun updateLateFireWithinGrace(enabled: Boolean, graceMs: Long) = viewModelScope.launch {
         repository.updateLateFireWithinGrace(enabled, graceMs)
         _settings.postValue(repository.getSettings())
+    }
+
+    fun refreshExactAlarmCapability() {
+        _exactAlarmAvailable.value = repository.canScheduleExactAlarms()
     }
 }

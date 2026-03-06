@@ -20,7 +20,7 @@ class PlannedMessageRescheduleReceiver : BroadcastReceiver() {
                     PlannedMessageReceiverEntryPoint::class.java,
                 )
                 entryPoint.plannedMessageRepository().bootstrap()
-                Log.i(TAG, "Rescheduled planned messages after ${intent.action}")
+                Log.d(TAG, "Rescheduled planned messages after ${intent.action}")
             } catch (e: Exception) {
                 Log.w(TAG, "Unable to reschedule planned messages", e)
             } finally {
@@ -30,7 +30,7 @@ class PlannedMessageRescheduleReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        private const val TAG = "PlannedMsgReschedule"
+        private const val TAG = "PM_SCHED"
         private val receiverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }

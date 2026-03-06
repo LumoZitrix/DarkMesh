@@ -9,6 +9,7 @@ import com.geeksville.mesh.plannedmessages.domain.PlannedMessageScheduleType
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -83,6 +84,25 @@ class PlannedMessageDaoClaimTest {
         assertTrue(secondBeforeExpiry.isEmpty())
         assertEquals(1, secondAfterExpiry.size)
         assertEquals(first.first().id, secondAfterExpiry.first().id)
+    }
+
+    @Test
+    fun observeByDestination_ordersByNextOccurrenceAndIncludesDisabled() = runBlocking {
+        val now = 1_700_000_000_000L
+        val early = dueMessage("dest-1", "early", now + 60_000L)
+        val late = dueMessage("dest-1", "late", now + 600_000L)
+        val disabled = dueMessage("dest-1", "disabled", now + 120_000L).copy(
+            isEnabled = false,
+            nextTriggerAtUtcEpochMs = null,
+        )
+        dao.insert(listOf(late, disabled, early))
+
+        val observed = dao.observeByDestination("dest-1").first()
+
+        assertEquals(3, observed.size)
+        assertEquals("early", observed[0].messageText)
+        assertEquals("late", observed[1].messageText)
+        assertEquals("disabled", observed[2].messageText)
     }
 
     private fun dueMessage(destination: String, text: String, dueAtUtcMs: Long): PlannedMessageEntity {

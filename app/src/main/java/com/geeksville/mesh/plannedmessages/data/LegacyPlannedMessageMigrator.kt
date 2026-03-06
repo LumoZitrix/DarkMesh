@@ -78,7 +78,7 @@ class LegacyPlannedMessageMigrator @Inject constructor(
                 plannedMessageDao.insert(migratedRows)
             }
             markMigrationDone()
-            Log.i(TAG, "Legacy planned messages migrated: ${migratedRows.size} rows")
+            Log.d(TAG, "Legacy planned messages migrated: ${migratedRows.size} rows")
         }
     }
 
@@ -87,6 +87,6 @@ class LegacyPlannedMessageMigrator @Inject constructor(
     }
 
     companion object {
-        private const val TAG = "PlannedMsgMigration"
+        private const val TAG = "PM_ENGINE"
     }
 }

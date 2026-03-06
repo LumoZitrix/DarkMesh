@@ -78,6 +78,15 @@ class PlannedMessageExecutionCoordinatorTest {
         assertEquals(false, finalize.resolvedMessage.isEnabled)
     }
 
+    @Test
+    fun `retry backoff uses expected capped sequence`() {
+        assertEquals(60_000L, PlannedMessageExecutionCoordinator.computeRetryBackoffMs(1))
+        assertEquals(120_000L, PlannedMessageExecutionCoordinator.computeRetryBackoffMs(2))
+        assertEquals(300_000L, PlannedMessageExecutionCoordinator.computeRetryBackoffMs(3))
+        assertEquals(600_000L, PlannedMessageExecutionCoordinator.computeRetryBackoffMs(4))
+        assertEquals(600_000L, PlannedMessageExecutionCoordinator.computeRetryBackoffMs(20))
+    }
+
     private fun dueOneShotMessage(id: Long, dueAtUtcMs: Long, attemptCount: Int): PlannedMessageEntity {
         return PlannedMessageEntity(
             id = id,

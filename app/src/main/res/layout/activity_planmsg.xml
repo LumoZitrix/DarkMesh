@@ -1,136 +1,171 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    android:padding="16dp"
-    android:orientation="vertical"
+    android:id="@+id/planMsgRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <TextView
-        android:id="@+id/txtNodeId"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        tools:ignore="HardcodedText"
-        android:text="Node: -" />
-
-    <TextView
-        android:id="@+id/plannerStatus"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Global Planner Status: UNKNOWN"
-        tools:ignore="HardcodedText" />
-
-    <Spinner
-        android:id="@+id/spinnerScheduleType"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp" />
-
-    <Spinner
-        android:id="@+id/spinnerDay"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp" />
-
-    <Button
-        android:id="@+id/btnDate"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:backgroundTint="#470202"
-        android:text="Date: --/--/----"
-        android:textColor="#FFFFFF"
-        android:visibility="gone"
-        tools:ignore="HardcodedText" />
-
-    <Button
-        android:backgroundTint="#470202"
-        android:id="@+id/btnTime"
-        android:textColor="#FFFFFF"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Time: --:--"
-        android:layout_marginTop="8dp"
-        tools:ignore="HardcodedText" />
-
-    <view class="com.geeksville.mesh.ui.activity.PlanMsgActivity$NDSpinner"
-        android:id="@+id/quick_messages"
-        android:layout_width="match_parent"
-        android:layout_height="50sp"
-        android:hint="Messaggio"
-        android:layout_marginTop="8dp"
-        tools:ignore="HardcodedText" />
-
-    <EditText
-        android:id="@+id/inputMessage"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="Message"
-        android:layout_marginTop="8dp"
-        tools:ignore="Autofill,HardcodedText,TextFields" />
-
-    <Spinner
-        android:id="@+id/spinnerPolicy"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp" />
-
     <LinearLayout
-        android:id="@+id/delayPrecisionPanel"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:background="#12000000"
+        android:layout_height="match_parent"
         android:orientation="vertical"
-        android:padding="8dp">
+        android:padding="16dp">
 
         <TextView
-            android:id="@+id/txtDelayPrecisionTitle"
+            android:id="@+id/txtNodeId"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Precisione/ritardi"
             android:textStyle="bold"
+            tools:ignore="HardcodedText"
+            android:text="Node: -" />
+
+        <TextView
+            android:id="@+id/plannerStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Global Planner Status: UNKNOWN"
             tools:ignore="HardcodedText" />
 
-        <androidx.appcompat.widget.SwitchCompat
-            android:id="@+id/switchLateFireWithinGrace"
+        <LinearLayout
+            android:id="@+id/exactAlarmBanner"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:checked="true"
-            android:text="Invia anche se in ritardo (entro X min)"
+            android:layout_marginTop="10dp"
+            android:background="#2AF57C00"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="10dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/exactAlarmBannerText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Precisione ridotta: abilita Exact Alarms per invii puntuali."
+                android:textColor="#6B3E00"
+                tools:ignore="HardcodedText" />
+
+            <Button
+                android:id="@+id/exactAlarmBannerButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="Apri"
+                tools:ignore="HardcodedText" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/delayPrecisionPanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="#12000000"
+            android:orientation="vertical"
+            android:padding="10dp">
+
+            <TextView
+                android:id="@+id/txtDelayPrecisionTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Impostazioni globali - Precisione/ritardi"
+                android:textStyle="bold"
+                tools:ignore="HardcodedText" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/switchLateFireWithinGrace"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:checked="true"
+                android:text="Invia anche se in ritardo (entro X min)"
+                tools:ignore="HardcodedText" />
+
+            <Spinner
+                android:id="@+id/spinnerGraceWindow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Regole pianificate"
+                android:textStyle="bold"
+                tools:ignore="HardcodedText" />
+
+            <Button
+                android:id="@+id/btnAddRule"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Nuova regola"
+                tools:ignore="HardcodedText" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/txtUnsavedChanges"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Hai modifiche non salvate."
+            android:textColor="@android:color/holo_orange_dark"
+            android:visibility="gone"
             tools:ignore="HardcodedText" />
 
-        <Spinner
-            android:id="@+id/spinnerGraceWindow"
+        <TextView
+            android:id="@+id/txtRulesEmpty"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp" />
+            android:layout_marginTop="10dp"
+            android:gravity="center_horizontal"
+            android:padding="12dp"
+            android:text="Nessuna regola presente. Crea la prima regola per iniziare."
+            android:textColor="#757575"
+            tools:ignore="HardcodedText" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recyclerRules"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="8dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:paddingBottom="6dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnDiscardChanges"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:text="Annulla modifiche"
+                tools:ignore="HardcodedText" />
+
+            <Button
+                android:id="@+id/btnSave"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:text="Salva regole"
+                tools:ignore="HardcodedText" />
+        </LinearLayout>
     </LinearLayout>
 
-    <Button
-        android:backgroundTint="#470202"
-        android:textColor="#FFFFFF"
-        android:id="@+id/btnAdd"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        tools:ignore="HardcodedText"
-        android:text="Add"
-        android:layout_marginTop="8dp" />
-
-    <ListView
-        android:id="@+id/listRules"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_marginTop="12dp"
-        android:layout_weight="1" />
-
-    <Button
-        android:backgroundTint="#470202"
-        android:textColor="#FFFFFF"
-        android:id="@+id/btnSave"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        tools:ignore="HardcodedText"
-        android:text="Save" />
-</LinearLayout>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

@@ -15,8 +15,17 @@ interface PlannedMessageDao {
         """
         SELECT * FROM planned_messages
         WHERE destination_key = :destinationKey
-          AND is_enabled = 1
-        ORDER BY hour_of_day ASC, minute_of_hour ASC, id ASC
+        ORDER BY
+            CASE
+                WHEN is_enabled = 1 AND next_trigger_at_utc_epoch_ms IS NOT NULL THEN 0
+                WHEN is_enabled = 1 THEN 1
+                ELSE 2
+            END ASC,
+            CASE
+                WHEN next_trigger_at_utc_epoch_ms IS NULL THEN 9223372036854775807
+                ELSE next_trigger_at_utc_epoch_ms
+            END ASC,
+            id ASC
         """
     )
     fun observeByDestination(destinationKey: String): Flow<List<PlannedMessageEntity>>
