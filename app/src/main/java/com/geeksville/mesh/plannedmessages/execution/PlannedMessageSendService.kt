@@ -17,6 +17,7 @@ import com.geeksville.mesh.plannedmessages.data.PlannedMessageRepository
 import com.geeksville.mesh.plannedmessages.domain.SchedulerEngine
 import com.geeksville.mesh.plannedmessages.orchestration.PlannedMessageScheduler
 import com.geeksville.mesh.service.MeshService
+import com.geeksville.mesh.service.startService
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

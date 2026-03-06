@@ -69,7 +69,6 @@ import com.geeksville.mesh.plannedmessages.data.PlannedMessageEntity
         AutoMigration(from = 14, to = 15),
         AutoMigration(from = 15, to = 16),
         AutoMigration(from = 16, to = 17),
-        AutoMigration(from = 17, to = 18),
     ],
     version = 19,
     exportSchema = true,
@@ -90,9 +89,51 @@ abstract class MeshtasticDatabase : RoomDatabase() {
                 MeshtasticDatabase::class.java,
                 "meshtastic_database"
             )
-                .addMigrations(MIGRATION_18_19)
+                .addMigrations(MIGRATION_17_19, MIGRATION_18_19)
                 .fallbackToDestructiveMigration()
                 .build()
+        }
+
+        val MIGRATION_17_19: Migration = object : Migration(17, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS planned_messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        destination_key TEXT NOT NULL,
+                        message_text TEXT NOT NULL,
+                        schedule_type TEXT NOT NULL,
+                        days_of_week_mask INTEGER NOT NULL,
+                        hour_of_day INTEGER NOT NULL,
+                        minute_of_hour INTEGER NOT NULL,
+                        one_shot_at_utc_epoch_ms INTEGER,
+                        timezone_id TEXT NOT NULL,
+                        delivery_policy TEXT NOT NULL,
+                        is_enabled INTEGER NOT NULL,
+                        next_trigger_at_utc_epoch_ms INTEGER,
+                        in_flight_until_utc_epoch_ms INTEGER,
+                        last_attempted_at_utc_epoch_ms INTEGER,
+                        attempt_count_since_last_fire INTEGER NOT NULL,
+                        last_fired_at_utc_epoch_ms INTEGER,
+                        had_timezone_fallback INTEGER NOT NULL,
+                        created_at_utc_epoch_ms INTEGER NOT NULL,
+                        updated_at_utc_epoch_ms INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE INDEX IF NOT EXISTS index_planned_messages_destination_key
+                    ON planned_messages(destination_key)
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE INDEX IF NOT EXISTS index_planned_messages_is_enabled_next_trigger_at_utc_epoch_ms_in_flight_until_utc_epoch_ms
+                    ON planned_messages(is_enabled, next_trigger_at_utc_epoch_ms, in_flight_until_utc_epoch_ms)
+                    """.trimIndent()
+                )
+            }
         }
 
         val MIGRATION_18_19: Migration = object : Migration(18, 19) {

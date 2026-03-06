@@ -102,7 +102,6 @@ import com.geeksville.mesh.model.Node
 import com.geeksville.mesh.model.UIViewModel
 import com.geeksville.mesh.model.getChannel
 import com.geeksville.mesh.ui.activity.PlanMsgActivity
-import com.geeksville.mesh.ui.activity.PlanMsgActivity.NODE_ID_EXTRA_PARAM
 import com.geeksville.mesh.ui.components.BroadcastIconButton
 import com.geeksville.mesh.ui.components.NodeKeyStatusIcon
 import com.geeksville.mesh.ui.components.NodeMenuAction
@@ -498,7 +497,7 @@ private fun MessageTopBar(
     onNavigateBack: () -> Unit,
     onBroadcastClick: () -> Unit = {
         val intent = Intent(localContext, PlanMsgActivity::class.java).apply {
-            putExtra(NODE_ID_EXTRA_PARAM, "$contactKey^$channelName")
+            putExtra(PlanMsgActivity.NODE_ID_EXTRA_PARAM, "$contactKey^$channelName")
         }
         localContext.startActivity(intent)
     }

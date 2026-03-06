@@ -40,7 +40,6 @@ import androidx.compose.ui.unit.dp
 import com.emp3r0r7.darkmesh.R
 import com.geeksville.mesh.model.Node
 import com.geeksville.mesh.ui.activity.PlanMsgActivity
-import com.geeksville.mesh.ui.activity.PlanMsgActivity.NODE_ID_EXTRA_PARAM
 
 @Suppress("LongMethod")
 @Composable
@@ -129,7 +128,7 @@ fun NodeMenu(
                 onClick = {
                     onDismissRequest()
                     val intent = Intent(context, PlanMsgActivity::class.java).apply {
-                        putExtra(NODE_ID_EXTRA_PARAM, node.num.toString())
+                        putExtra(PlanMsgActivity.NODE_ID_EXTRA_PARAM, node.num.toString())
                     }
                     context.startActivity(intent)
                 },
