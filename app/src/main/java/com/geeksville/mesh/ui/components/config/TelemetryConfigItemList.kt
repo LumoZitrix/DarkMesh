@@ -32,10 +32,10 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.geeksville.mesh.OVERRIDE_TELEMETRY_ALL_VERSIONS
 import com.geeksville.mesh.android.advancedPrefs
 import com.geeksville.mesh.model.DeviceVersion
 import com.geeksville.mesh.model.RadioConfigViewModel
+import com.geeksville.mesh.ui.OVERRIDE_TELEMETRY_ALL_VERSIONS
 import com.geeksville.mesh.ui.components.EditTextPreference
 import com.geeksville.mesh.ui.components.PreferenceCategory
 import com.geeksville.mesh.ui.components.PreferenceFooter

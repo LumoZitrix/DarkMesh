@@ -62,6 +62,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -86,7 +87,7 @@ import com.geeksville.mesh.ui.compose.ElevationInfo
 import com.geeksville.mesh.ui.compose.SatelliteCountInfo
 import com.geeksville.mesh.ui.preview.NodePreviewParameterProvider
 import com.geeksville.mesh.ui.theme.AppTheme
-import com.geeksville.mesh.util.ApiUtil
+import com.geeksville.mesh.util.AppUtil
 import com.geeksville.mesh.util.toDistanceString
 import kotlinx.coroutines.delay
 import org.meshtastic.proto.ConfigProtos.Config.DeviceConfig
@@ -111,6 +112,9 @@ fun NodeItem(
     val longName = thatNode.user.longName.ifEmpty { stringResource(id = R.string.unknown_username) }
     val unmessagable = thatNode.user.isUnmessagable
 
+    val tooltipState = rememberTooltipState()
+    val scope = rememberCoroutineScope()
+
     val isThisNode = thisNode?.num == thatNode.num
     val system = remember(distanceUnits) { DisplayConfig.DisplayUnits.forNumber(distanceUnits) }
     val distance = remember(thisNode, thatNode) {
@@ -128,7 +132,7 @@ fun NodeItem(
         thatNode.user.role.name
     }
 
-    val infrastructure = ApiUtil.isInfrastructure(roleName)
+    val infrastructure = AppUtil.isInfrastructure(roleName)
 
     val style = if (thatNode.isUnknownUser) {
         LocalTextStyle.current.copy(fontStyle = FontStyle.Italic)
@@ -223,9 +227,7 @@ fun NodeItem(
                         )
                     }
 
-                    if (!isThisNode &&
-                        (infrastructure || unmessagable)
-                        ) {
+                    if (infrastructure || unmessagable) {
 
                         var icon = Icons.Default.SettingsInputAntenna
                         var description = "Infrastructure node, may not respond to private messages."
@@ -235,6 +237,10 @@ fun NodeItem(
                             icon = Icons.Default.PhonelinkErase
                             description = "Unmessageable node, may not respond to private messages."
                             iconColor = R.color.colorPrimaryDark
+
+                            if(isThisNode){
+                                description = "Your node is set as unmessageable."
+                            }
                         }
 
                         TooltipBox(

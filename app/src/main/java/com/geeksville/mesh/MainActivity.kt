@@ -29,6 +29,7 @@ import android.os.Bundle
 import android.os.RemoteException
 import android.text.InputType
 import android.text.method.LinkMovementMethod
+import android.view.Gravity
 import android.view.Menu
 import android.view.MenuItem
 import android.view.MotionEvent
@@ -80,11 +81,12 @@ import com.geeksville.mesh.android.permissionMissing
 import com.geeksville.mesh.android.rationaleDialog
 import com.geeksville.mesh.android.shouldShowRequestPermissionRationale
 import com.geeksville.mesh.concurrent.handledLaunch
+import com.geeksville.mesh.database.DbImportState
 import com.geeksville.mesh.model.BluetoothViewModel
 import com.geeksville.mesh.model.Contact
 import com.geeksville.mesh.model.DeviceVersion
 import com.geeksville.mesh.model.Node
-import com.geeksville.mesh.model.RelayEvent
+import com.geeksville.mesh.model.RadioConfigViewModel
 import com.geeksville.mesh.model.UIViewModel
 import com.geeksville.mesh.model.UIViewModel.Companion.getPreferences
 import com.geeksville.mesh.model.colorizeTracerouteResponse
@@ -102,6 +104,12 @@ import com.geeksville.mesh.service.MeshService
 import com.geeksville.mesh.service.MeshServiceNotifications
 import com.geeksville.mesh.service.ServiceRepository
 import com.geeksville.mesh.service.startService
+import com.geeksville.mesh.ui.AUTO_DELETE_OLD_NODES
+import com.geeksville.mesh.ui.AUTO_DELETE_PRESERVE_FAVOURITES
+import com.geeksville.mesh.ui.AUTO_DELETE_TIME_HOURS
+import com.geeksville.mesh.ui.AdvancedSettings
+import com.geeksville.mesh.ui.AutoDeleteConfig
+import com.geeksville.mesh.ui.BatteryNotification
 import com.geeksville.mesh.ui.ChannelFragment
 import com.geeksville.mesh.ui.ContactsFragment
 import com.geeksville.mesh.ui.DebugFragment
@@ -116,6 +124,7 @@ import com.geeksville.mesh.ui.message.navigateToMessages
 import com.geeksville.mesh.ui.navigateToNavGraph
 import com.geeksville.mesh.ui.navigateToShareMessage
 import com.geeksville.mesh.ui.theme.AppTheme
+import com.geeksville.mesh.util.Capabilities
 import com.geeksville.mesh.util.Exceptions
 import com.geeksville.mesh.util.LanguageUtils
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -129,6 +138,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.meshtastic.proto.ConfigProtos
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import javax.inject.Inject
 
 /*
@@ -195,7 +207,11 @@ class MainActivity : AppCompatActivity(), Logging {
 
     private val bluetoothViewModel: BluetoothViewModel by viewModels()
     private val model: UIViewModel by viewModels()
+    private val radioConfigViewModel: RadioConfigViewModel by viewModels()
+
     private var lastWarningStealthHunter = 0L
+    private var exportFavOnly: Boolean = false
+    private var skipNodeDbWipe: Boolean = false
 
     @Inject
     internal lateinit var serviceRepository: ServiceRepository
@@ -427,9 +443,19 @@ class MainActivity : AppCompatActivity(), Logging {
         ActivityResultContracts.StartActivityForResult()
     ) {
         if (it.resultCode == RESULT_OK) {
-            it.data?.data?.let { fileUri -> model.saveMessagesCSV(fileUri) }
+            it.data?.data?.let { fileUri -> model.saveNodeDbURL(fileUri,exportFavOnly) }
         }
     }
+
+    private val openDocumentLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+
+            if (result.resultCode == RESULT_OK) {
+                result.data?.data?.let { uri ->
+                   model.importNodeDbFile(uri)
+                }
+            }
+        }
 
     override fun onDestroy() {
         mainScope.cancel("Activity going away")
@@ -468,6 +494,7 @@ class MainActivity : AppCompatActivity(), Logging {
                     val info: MyNodeInfo? = service.myNodeInfo // this can be null
 
                     if (info != null) {
+                        //todo maybe remove this
                         val isOld = info.minAppVersion > BuildConfig.VERSION_CODE
                         if (isOld) {
                             showAlert(R.string.app_too_old, R.string.must_update)
@@ -630,30 +657,12 @@ class MainActivity : AppCompatActivity(), Logging {
         serviceRepository.setMeshService(null)
     }
 
-    private fun setFirstRespondingNodeForGateway(traceResponse: String?){
-
-        if(traceResponse != null && !traceResponse.isEmpty()){
-            try {
-                val nearestNodeName = traceResponse.split("■")[2].split("\n")[0]
-
-                val relayEvent = RelayEvent(
-                    nodeLongName = nearestNodeName
-                )
-
-                model.updateLastRelayNodeWithTimeout(relayEvent)
-
-            } catch (e: Exception){
-                debug("Could not determine first responding node! ${e.message}")
-            }
-        }
-
-    }
-
     override fun onStop() {
         unbindMeshService()
         super.onStop()
     }
 
+    @Suppress("UnnecessaryVariable")
     override fun onStart() {
         super.onStart()
 
@@ -695,9 +704,8 @@ class MainActivity : AppCompatActivity(), Logging {
 
             if (response == null) return@observe
 
-            setFirstRespondingNodeForGateway(response)
-
             val coloredResponse = colorizeTracerouteResponse(response)
+
             val storedResponse = response
 
             val dialog = MaterialAlertDialogBuilder(this)
@@ -717,11 +725,11 @@ class MainActivity : AppCompatActivity(), Logging {
                 .setPositiveButton(R.string.okay) { _, _ -> }
                 .show()
 
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
-                ?.setTextColor(ContextCompat.getColor(this, R.color.colorAnnotation))
-
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                ?.setTextColor(ContextCompat.getColor(this, R.color.colorAnnotation))
+            setDialogButtonsColor(
+                dialog,
+                AlertDialog.BUTTON_NEUTRAL,
+                AlertDialog.BUTTON_POSITIVE
+            )
 
             model.clearTracerouteResponse()
         }
@@ -811,6 +819,7 @@ class MainActivity : AppCompatActivity(), Logging {
         return super.onPrepareOptionsMenu(menu)
     }
 
+    @SuppressLint("SetTextI18n")
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         // Handle action bar item clicks here. The action bar will
         // automatically handle clicks on the Home/Up button, so long
@@ -943,15 +952,142 @@ class MainActivity : AppCompatActivity(), Logging {
                 return true
             }
 
-//            R.id.save_messages_csv -> {
-//                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-//                    addCategory(Intent.CATEGORY_OPENABLE)
-//                    type = "application/csv"
-//                    putExtra(Intent.EXTRA_TITLE, "rangetest.csv")
-//                }
-//                createDocumentLauncher.launch(intent)
-//                return true
-//            }
+            R.id.export_node_db -> {
+
+                exportFavOnly = false
+                skipNodeDbWipe = false
+
+                val checkBoxExportFav = createCheckBox("Export favorites only", false)
+                val checkBoxSkipNodeDbWipe = createCheckBox( "Skip NodeDb Wipe", false)
+
+                checkBoxExportFav.visibility = View.VISIBLE
+                checkBoxSkipNodeDbWipe.visibility = View.GONE
+
+                val rootContainer = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    setPadding(48, 24, 48, 0)
+
+                    addView(checkBoxExportFav)
+                    addView(checkBoxSkipNodeDbWipe)
+                }
+
+                val options = arrayOf("Export Node DB", "Import Node DB")
+                var selectedOption = 0
+
+                val warnDialog = MaterialAlertDialogBuilder(this)
+                    .setTitle("Node DB Operations")
+                    .setSingleChoiceItems(options, 0) { _, which ->
+                        selectedOption = which
+                        checkBoxExportFav.visibility = if (which == 0) View.VISIBLE else View.GONE
+                        checkBoxSkipNodeDbWipe.visibility = if (which == 1) View.VISIBLE else View.GONE
+                    }
+                    .setView(rootContainer)
+                    .setPositiveButton("OK") { dialog, _ ->
+
+                        exportFavOnly = checkBoxExportFav.isChecked
+                        skipNodeDbWipe = checkBoxSkipNodeDbWipe.isChecked
+
+                        when (selectedOption) {
+
+                            0 -> {
+                                // EXPORT
+                                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                    addCategory(Intent.CATEGORY_OPENABLE)
+                                    type = "application/octet-stream"
+                                    val dateFormat = SimpleDateFormat("dd-MM-yyyy-HH:mm", Locale.getDefault())
+                                    val time = dateFormat.format(Date())
+
+                                    val prefix = if(exportFavOnly){
+                                        "fav"
+                                    } else {
+                                        "full"
+                                    }
+
+                                    putExtra(Intent.EXTRA_TITLE, "${prefix}_${time}.dmdb")
+                                }
+                                createDocumentLauncher.launch(intent)
+                            }
+
+                            1 -> {
+                                mainScope.launch (Dispatchers.Main){
+
+                                    if(DbImportState.importInProgress()){
+                                        showSnackbar("Cannot import again, import in progress!")
+                                        return@launch
+                                    }
+
+                                    val state =
+                                        model.connectionState.asLiveData().value ?: return@launch
+
+                                    if(!state.isConnected()){
+                                        showSnackbar("Cannot import DB, radio it not connected!")
+                                        return@launch
+                                    }
+
+                                    val firmwareVersion = radioConfigViewModel.radioConfigState.value.metadata?.firmwareVersion
+                                    val capabilities = Capabilities(firmwareVersion)
+
+                                    if(!capabilities.canSendVerifiedContacts){
+                                        showSnackbar("Cannot use import DB feature, firmware version is too old!")
+                                        return@launch
+                                    }
+
+                                    //if nodedb less than 10 , import directly otherwise, add all
+                                    val nodeDbSize = model.getNodesCount()
+                                    if(nodeDbSize >= 10 && !skipNodeDbWipe){
+
+                                        val warnDialog = MaterialAlertDialogBuilder(this@MainActivity)
+                                            .setTitle("Reset Node DB")
+
+                                            .setMessage("Node DB contains $nodeDbSize or more nodes.\n\n" +
+                                                    "DB Reset is needed to import a new one. " +
+                                                    "\n\nProceed and Reboot?")
+
+                                            .setPositiveButton("YES") { _, _ ->
+
+                                                model.deleteAllLocalNodesExceptOurs()
+                                                radioConfigViewModel.wipeOurNodeDBCompletely()?.let {
+                                                    showSnackbar("Device is rebooting, be patient..")
+                                                } ?: run {
+                                                    showSnackbar("Could not reset NodeDb!")
+                                                }
+                                            }
+                                            .setNegativeButton("NO", null)
+                                            .show()
+
+                                        setDialogButtonsColor(
+                                            warnDialog,  AlertDialog.BUTTON_POSITIVE,
+                                            AlertDialog.BUTTON_NEGATIVE
+                                        )
+
+                                    } else {
+                                        // IMPORT
+                                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                                            addCategory(Intent.CATEGORY_OPENABLE)
+                                            type = "*/*"
+                                        }
+                                        openDocumentLauncher.launch(intent)
+                                    }
+                                }
+                            }
+                        }
+
+                        dialog.dismiss()
+
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+
+                setDialogButtonsColor(
+                    warnDialog,
+                    AlertDialog.BUTTON_POSITIVE,
+                    AlertDialog.BUTTON_NEGATIVE
+                )
+
+                return true
+            }
+
 
             R.id.theme -> {
                 chooseThemeDialog()
@@ -968,6 +1104,11 @@ class MainActivity : AppCompatActivity(), Logging {
                 return true
             }
 
+            R.id.battery_alerts -> {
+                startActivity(Intent(this, BatteryNotification::class.java))
+                return true
+            }
+
             R.id.preferences_quick_chat -> {
                 val fragmentManager: FragmentManager = supportFragmentManager
                 val fragmentTransaction: FragmentTransaction = fragmentManager.beginTransaction()
@@ -979,6 +1120,14 @@ class MainActivity : AppCompatActivity(), Logging {
             }
 
             else -> super.onOptionsItemSelected(item)
+        }
+    }
+
+    @Suppress("SameParameterValue")
+    private fun createCheckBox(msg: String, checked: Boolean): CheckBox {
+        return CheckBox(this).apply {
+            text = msg
+            isChecked = checked
         }
     }
 
@@ -1148,11 +1297,12 @@ class MainActivity : AppCompatActivity(), Logging {
 
         dialog.show()
 
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-            ?.setTextColor(ContextCompat.getColor(this, R.color.colorAnnotation))
+        setDialogButtonsColor(
+            dialog,
+            AlertDialog.BUTTON_POSITIVE,
+            AlertDialog.BUTTON_NEGATIVE
+        )
 
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE)
-            ?.setTextColor(ContextCompat.getColor(this, R.color.colorAnnotation))
     }
     
     private fun checkLocationEnabled(
@@ -1374,5 +1524,12 @@ class MainActivity : AppCompatActivity(), Logging {
         } else {
             tab.removeBadge()
         }
+    }
+
+    private fun setDialogButtonsColor(dialog: AlertDialog, firstButton: Int, secondButton: Int){
+        dialog.getButton(firstButton)
+            ?.setTextColor(ContextCompat.getColor(this, R.color.colorAnnotation))
+        dialog.getButton(secondButton)
+            ?.setTextColor(ContextCompat.getColor(this, R.color.colorAnnotation))
     }
 }

@@ -67,7 +67,10 @@ interface NodeInfoDao {
     WHERE (:includeUnknown = 1 OR short_name IS NOT NULL)
         AND (:filter = ''
             OR (long_name LIKE '%' || :filter || '%'
-            OR short_name LIKE '%' || :filter || '%'))
+            OR short_name LIKE '%' || :filter || '%'
+            OR CAST(num AS TEXT) LIKE '%' || :filter || '%'
+            OR LOWER(printf('!%08x', num)) LIKE '%' || LOWER(:filter) || '%'
+            OR LOWER(printf('%08x', num)) LIKE '%' || LOWER(REPLACE(:filter, '!', '')) || '%'))
     ORDER BY CASE
         WHEN num = (SELECT myNodeNum FROM my_node LIMIT 1) THEN 0
         ELSE 1
@@ -119,6 +122,17 @@ interface NodeInfoDao {
 
     @Query("DELETE FROM nodes")
     fun clearNodeInfo()
+    @Query("DELETE FROM nodes WHERE num != :nyNodeNum")
+    fun clearNodeInfoExceptOurs(nyNodeNum: Int)
+
+    @Query("DELETE FROM metadata WHERE num != :myNodeNum")
+    fun clearMetadataExceptOurs(myNodeNum: Int)
+
+    @Transaction
+    fun clearAllExceptOurs(myNodeNum: Int) {
+        clearNodeInfoExceptOurs(myNodeNum)
+        clearMetadataExceptOurs(myNodeNum)
+    }
 
     @Query("DELETE FROM nodes WHERE num=:num")
     fun deleteNode(num: Int)
@@ -128,4 +142,7 @@ interface NodeInfoDao {
 
     @Query("DELETE FROM metadata WHERE num=:num")
     fun deleteMetadata(num: Int)
+
+    @Query("SELECT COUNT(*) FROM nodes")
+    suspend fun countNodes(): Int
 }
