@@ -23,7 +23,9 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.os.RemoteException
 import android.view.Menu
+import android.widget.Toast
 import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
@@ -34,6 +36,13 @@ import com.geeksville.mesh.DataPacket
 import com.geeksville.mesh.IMeshService
 import com.geeksville.mesh.Position
 import com.geeksville.mesh.android.Logging
+import com.geeksville.mesh.database.DbImportState
+import com.geeksville.mesh.database.DbImportState.ARGS_TAG
+import com.geeksville.mesh.database.DbImportState.ARG_FAVORITE_ONLY
+import com.geeksville.mesh.database.DbImportState.DEFAULT_IMPORTED_NODES_PERMITTED
+import com.geeksville.mesh.database.DbImportState.MAX_ALLOWED_DB_SIZE_BYTES
+import com.geeksville.mesh.database.DbImportState.NODE_EXPORT_DB_VER
+import com.geeksville.mesh.database.DbImportState.NODE_EXPORT_SEPARATOR
 import com.geeksville.mesh.database.MeshLogRepository
 import com.geeksville.mesh.database.NodeRepository
 import com.geeksville.mesh.database.PacketRepository
@@ -45,8 +54,11 @@ import com.geeksville.mesh.repository.datastore.RadioConfigRepository
 import com.geeksville.mesh.repository.radio.RadioInterfaceService
 import com.geeksville.mesh.service.MeshService
 import com.geeksville.mesh.service.ServiceAction
+import com.geeksville.mesh.service.ServiceRepository
 import com.geeksville.mesh.ui.map.MAP_STYLE_ID
-import com.geeksville.mesh.util.ApiUtil
+import com.geeksville.mesh.ui.share.getSharedContactUrl
+import com.geeksville.mesh.ui.share.toSharedContact
+import com.geeksville.mesh.util.AppUtil
 import com.geeksville.mesh.util.getShortDate
 import com.geeksville.mesh.util.positionToMeter
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -69,6 +81,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.meshtastic.proto.AdminProtos
 import org.meshtastic.proto.AppOnlyProtos
 import org.meshtastic.proto.ChannelProtos
 import org.meshtastic.proto.ChannelProtos.ChannelSettings
@@ -95,6 +108,7 @@ import kotlin.time.Duration.Companion.minutes
 // that user. If the original name is only one word, strip vowels from the original name and if the result is
 // 3 or more characters, use the first three characters. If not, just take the first 3 characters of the
 // original name.
+
 fun getInitials(nameIn: String): String {
     val nchars = 4
     val minchars = 2
@@ -141,10 +155,16 @@ internal fun getChannelList(
 }
 
 data class RelayEvent (
-    val relayNodeLastByte: Int = -1,
-    val relayNodeIdentifier: Int = 0,
+    var relayNodeNum: Int = 0,
     var nodeLongName: String? = null,
+    var nodeShortName: String? = null,
+    var confidence: Int = 0,
+    val relayNodeLastByte: Int = -1,
     val timestamp: Long = System.currentTimeMillis(),
+    val rxRssi: Int = Int.MAX_VALUE,
+    val rxSnr: Float = Float.MAX_VALUE,
+    val isTraceroute: Boolean = false,
+    val isDirect: Boolean = false
 )
 
 
@@ -183,8 +203,9 @@ class UIViewModel @Inject constructor(
     private val meshLogRepository: MeshLogRepository,
     private val packetRepository: PacketRepository,
     private val quickChatActionRepository: QuickChatActionRepository,
-    private val preferences: SharedPreferences
-) : ViewModel(), Logging {
+    private val preferences: SharedPreferences,
+    private val serviceRepository: ServiceRepository,
+    ) : ViewModel(), Logging {
 
     private val _lastRelayNode = MutableStateFlow<RelayEvent?>(null)
     val lastRelayNode = _lastRelayNode.asStateFlow()
@@ -209,6 +230,8 @@ class UIViewModel @Inject constructor(
 
     val quickChatActions get() = quickChatActionRepository.getAllActions()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    
+    var deviceHardwareList: List<DeviceHardware> = listOf()
 
     /**
      * Flow reattivo che espone il ruolo corrente del dispositivo (CLIENT, ROUTER, TRACKER, ecc.)
@@ -308,7 +331,7 @@ class UIViewModel @Inject constructor(
             sort = sort,
             filter = filter,
             includeUnknown = includeUnknown,
-            gpsFormat = ApiUtil.safeGpsFormat(profile.config.display.gpsFormat),
+            gpsFormat = AppUtil.safeGpsFormat(profile.config.display.gpsFormat),
             distanceUnits = profile.config.display.units.number,
             tempInFahrenheit = profile.moduleConfig.telemetry.environmentDisplayFahrenheit,
             showDetails = showDetails,
@@ -340,6 +363,7 @@ class UIViewModel @Inject constructor(
 
     fun getNode(userId: String?) = nodeDB.getNode(userId ?: DataPacket.ID_BROADCAST)
     fun getUser(userId: String?) = nodeDB.getUser(userId ?: DataPacket.ID_BROADCAST)
+    fun getByUserId(userId: String?) = nodeDB.nodeDBbyNum.value.values.firstOrNull{ it.user.id == userId }
 
     private val _snackbarText = MutableLiveData<Any?>(null)
     val snackbarText: LiveData<Any?> get() = _snackbarText
@@ -366,9 +390,9 @@ class UIViewModel @Inject constructor(
                 val nodes = nodeDB.nodeDBbyNum.value.values.toList()
                 val ourNodeNum = ourNodeInfo.value?.num
 
-                if (relayEvent.relayNodeLastByte > 0){
+                if (relayEvent.relayNodeLastByte > 0){ //relayed packets
 
-                    val relayNodeEntity = Packet.getRelayNode(
+                    val (relayNodeEntity, confidence) = Packet.getRelayNode(
                         relayEvent.relayNodeLastByte,
                         nodes,
                         ourNodeNum
@@ -377,22 +401,73 @@ class UIViewModel @Inject constructor(
                     relayNodeEntity?.let {
 
                         relayEvent.nodeLongName = relayNodeEntity.user.longName
+                        relayEvent.nodeShortName = relayNodeEntity.user.shortName
+                        relayEvent.relayNodeNum = relayNodeEntity.num
+                        relayEvent.confidence = confidence
+
                         updateLastRelayNode(relayEvent)
                         expireRelayNode()
                     }
 
-                } else if (relayEvent.relayNodeIdentifier != 0){
-                    nodes.firstOrNull { it.num == relayEvent.relayNodeIdentifier }?.let {
+                } else if (relayEvent.relayNodeNum != 0){ //direct packets
+
+                    nodes.firstOrNull { it.num == relayEvent.relayNodeNum }?.let {
                      matchingNode ->
 
                         relayEvent.nodeLongName = matchingNode.user.longName
+                        relayEvent.nodeShortName = matchingNode.user.shortName
                         updateLastRelayNode(relayEvent)
                         expireRelayNode()
+                    }
+
+                } else if (relayEvent.isTraceroute) {
+
+                    relayEvent.nodeLongName?.let { name ->
+
+                        val longName: String = name
+                        nodes.firstOrNull { node ->
+                            longName.contains(node.user.longName)
+                        }?.let { match ->
+
+                            relayEvent.nodeLongName = match.user.longName
+                            relayEvent.nodeShortName = match.user.shortName
+                            relayEvent.relayNodeNum = match.num
+
+                            updateLastRelayNode(relayEvent)
+                            expireRelayNode()
+                        }
                     }
                 }
             }
             .launchIn(viewModelScope)
 
+        viewModelScope.launch {
+            DbImportState.importComplete.collect { epoch ->
+
+                if(epoch == null) return@collect
+
+                DbImportState.elapsed()?.let {
+                    val totalSeconds = it / 1000
+
+                    val minutes = totalSeconds / 60
+                    val seconds = totalSeconds % 60
+
+                    if(seconds == 0L){
+                        showSnackbar("Import terminated instantly, " +
+                                "probably all nodes were already present locally")
+                    } else {
+                        val formatted = if (minutes > 0) {
+                            "${minutes}m ${seconds}s"
+                        } else {
+                            "${seconds}s"
+                        }
+                        showSnackbar("Import terminated after $formatted")
+                    }
+
+                    DbImportState.setImportCompleteNull()
+                }
+            }
+        }
         debug("ViewModel created")
     }
 
@@ -718,9 +793,279 @@ class UIViewModel @Inject constructor(
         }
     }
 
+    fun addSharedContact(sharedContact: AdminProtos.SharedContact, massive: Boolean = false) =
+        viewModelScope.launch { serviceRepository.onServiceAction(ServiceAction.ImportContact(sharedContact, massive)) }
+
+    fun importNodeDbFile(fileUri: Uri){
+
+        val fileSize = app.contentResolver
+            .openFileDescriptor(fileUri, "r")
+            ?.use { it.statSize } ?: -1L
+
+        if (fileSize <= 0L) {
+            showSnackbar("Cannot determine file size")
+            return
+        }
+
+        if (fileSize > MAX_ALLOWED_DB_SIZE_BYTES) {
+            showSnackbar("File too large")
+            return
+        }
+
+        val myNum = myNodeNum ?: return
+
+        var content: String? = null
+        app.contentResolver.openInputStream(fileUri)?.use { inputStream ->
+            content = inputStream.bufferedReader(Charsets.UTF_8).use {
+                it.readText()
+            }
+        }
+
+        if (content == null || content.isBlank()) {
+            showSnackbar("Imported Node Db is not valid!")
+            return
+        }
+
+        val split = content.split(NODE_EXPORT_SEPARATOR)
+
+        if (split.size <= 1) {
+            showSnackbar("Imported Node Db file is empty nor not valid!")
+            return
+        }
+
+        val header = split[0]
+        debug("Imported DB Header $header")
+
+        detectNodeDMDBVersion(header)?.let { ver ->
+            Toast.makeText(
+                app, "DarkMesh DB $ver detected, proceeding..",
+                Toast.LENGTH_SHORT
+            ).show()
+        } ?: run {
+            showSnackbar("Invalid DarkMesh DB format!")
+            return
+        }
+
+        var onlyFavDb = false
+
+        detectNodeDMDBArgs(header)?.let {
+
+            info("Args detected, parsing..")
+            val guard = mutableListOf<Char>()
+
+            if(it.length > 10){
+                showSnackbar("An error occurred while parsing DB args!")
+                return
+            }
+
+            for (c in it) {
+
+                if (guard.contains(c)) {
+                    showSnackbar("Duplicate args detected in header, halting!")
+                    return
+                }
+
+                try {
+                    when (val arg = c.digitToInt()) {
+                        ARG_FAVORITE_ONLY -> {
+                            onlyFavDb = true
+                            guard.add(c)
+                            //todo add more args
+                        }
+                        else -> {
+                            showSnackbar("Unknown or unhandled DB arg: $arg")
+                            return
+                        }
+                    }
+                } catch (_: Exception) {
+                    showSnackbar("Invalid args detected, cannot proceed!")
+                    return
+                }
+            }
+        } ?: run {
+            info("NO args detected, continue..")
+        }
+
+        var contacts = split
+            .drop(1) // remove header
+            .filter { it.isNotEmpty() }
+
+        var hwLimit = DEFAULT_IMPORTED_NODES_PERMITTED
+
+        ourNodeInfo.value?.user?.hwModel?.let {
+            val hwModel = getDeviceHardwareFromHardwareModel(it)
+            hwModel?.architecture?.let { arch ->
+                hwLimit = when (arch) {
+                    "esp32" -> 200
+                    "esp32-s3" -> 250
+                    "nrf52840" -> 80
+                    else -> DEFAULT_IMPORTED_NODES_PERMITTED
+                }
+            }
+        }
+
+        if (contacts.size > hwLimit) {
+            warn("Imported NodeDB is too large: ${contacts.size} , normalizing for current HW")
+            contacts = contacts.take(hwLimit)
+        }
+
+        if (myNodeNum == null){
+            showSnackbar("Import failed: Cannot retrieve our local node number!")
+            return
+        }
+
+        val currentNodes = nodeDB.nodeDBbyNum.value
+
+        Toast.makeText(
+            app,
+            "Starting import DO NOT DISCONNECT from BT!",
+            Toast.LENGTH_LONG
+        ).show()
+
+        //do not move this to another place!
+        DbImportState.emitFirst()
+
+        viewModelScope.launch (Dispatchers.IO){
+
+            var insert = 0
+
+            for (nodeUrl in contacts) {
+                try {
+                    val contactProto = nodeUrl.toUri().toSharedContact()
+
+                    if(currentNodes.contains(contactProto.nodeNum)){
+                        debug("Skipping db insert of " +
+                                "${contactProto.nodeNum} it is already present"
+                        )
+                        continue
+                    }
+
+                    addSharedContact(contactProto, true)
+                    setFavorite(
+                        myNum,
+                        contactProto.nodeNum,
+                        toAdd = onlyFavDb,
+                    )
+                    insert++
+                } catch (e: Exception) {
+                    warn("An error occurred while parsing url! ${e.message}")
+                }
+            }
+
+            if(insert == 0){
+                warn("No valid contact has been added, probably all already present!")
+                DbImportState.interruptRunningImport()
+            }
+        }
+    }
+
+    fun saveNodeDbURL(fileUri: Uri, favoriteOnly: Boolean) {
+        viewModelScope.launch(Dispatchers.Main) {
+
+            if (myNodeNum == null){
+                showSnackbar("Export failed: Cannot retrieve our local node number!")
+                return@launch
+            }
+
+            val nodes = nodeDB.nodeDBbyNum.value
+
+            if(nodes.isEmpty() || nodes.size <= 2){
+                showSnackbar("Export failed: NodeDB is empty or does not contain enough nodes.")
+                return@launch
+            }
+
+            val sb = StringBuilder()
+
+            sb.append("DARKMESH_NODEDB_FILE v$NODE_EXPORT_DB_VER GENERATED " +
+                    "BY $myNodeNum at ${System.currentTimeMillis()} $ARGS_TAG")
+
+            if(favoriteOnly) {
+                sb.append(ARG_FAVORITE_ONLY)
+            }
+
+            val filteredNodes = nodes.values
+                .asSequence()
+                .filter { it.num != myNodeNum }
+                .filter { node -> !favoriteOnly || node.isFavorite }
+                .sortedWith(
+                    compareByDescending { it.lastHeard }
+                )
+
+            sb.append(NODE_EXPORT_SEPARATOR)
+
+            var exportSize = 0
+
+            filteredNodes.forEach { node ->
+                val sharedContact = AdminProtos.SharedContact
+                    .newBuilder()
+                    .setUser(node.user)
+                    .setNodeNum(node.num)
+                    .build()
+
+                val uri = sharedContact.getSharedContactUrl()
+                sb.append(uri).append(NODE_EXPORT_SEPARATOR)
+                exportSize++
+            }
+
+            if (exportSize == 0) {
+                showSnackbar("No nodes available for export " +
+                        "with the current selection or filters.")
+                return@launch
+            }
+
+            writeToUri(fileUri) { writer ->
+                writer.append(sb)
+            }
+
+            Toast.makeText(
+                app,
+                "Export Completed! Nodes: $exportSize",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    fun detectNodeDMDBVersion(header: String): String?{
+        try {
+            header.split(" ").let {
+                if(it.size > 1 && it[1].startsWith("v")){
+                    return it[1]
+                }
+            }
+        } catch (e: Exception){
+            warn("An error occurred while parsing DMDB version ${e.message}")
+        }
+
+        return null
+    }
+
+    fun detectNodeDMDBArgs(header: String): String?{
+        try {
+            header.split(ARGS_TAG).let {
+                if(it.size > 1){
+                   return it[1]
+                }
+            }
+        } catch (e: Exception){
+            warn("An error occurred while parsing DMDB version ${e.message}")
+        }
+
+        return null
+    }
+
+    private fun getDeviceHardwareFromHardwareModel(hwModel: MeshProtos.HardwareModel): DeviceHardware? {
+        return if(deviceHardwareList.isEmpty()){
+            AppUtil.loadDeviceHardwareList(app)
+                .firstOrNull { it.hwModel == hwModel.number }
+        } else {
+            deviceHardwareList.firstOrNull { it.hwModel == hwModel.number }
+        }
+    }
+
     /**
      * Write the persisted packet data out to a CSV file in the specified location.
      */
+    @Suppress("unused")
     fun saveMessagesCSV(uri: Uri) {
         viewModelScope.launch(Dispatchers.Main) {
             // Extract distances to this device from position messages and put (node,SNR,distance) in
@@ -869,6 +1214,17 @@ class UIViewModel @Inject constructor(
         relayNodeexpireJob = viewModelScope.launch {
             delay(60.minutes)
             updateLastRelayNode(null)
+        }
+    }
+    suspend fun getNodesCount() : Int{
+        return nodeDB.countNodes()
+    }
+
+    fun deleteAllLocalNodesExceptOurs(){
+        viewModelScope.launch {
+            myNodeNum?.let {
+                nodeDB.clearAllExceptOurs(it)
+            }
         }
     }
 }

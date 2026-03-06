@@ -1,19 +1,60 @@
 package com.geeksville.mesh.util
 
+import android.content.Context
+import android.graphics.Color
+import com.geeksville.mesh.android.BuildUtils.errormsg
+import com.geeksville.mesh.model.DeviceHardware
+import com.geeksville.mesh.model.DeviceHardwareDto
 import com.geeksville.mesh.model.custom.TracerouteJson
 import com.geeksville.mesh.model.custom.TracerouteNode
 import com.geeksville.mesh.model.custom.TraceroutePath
 import com.geeksville.mesh.model.fullRouteDiscovery
+import com.geeksville.mesh.ui.components.Quality
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.protobuf.util.JsonFormat
+import kotlinx.serialization.json.Json
 import org.meshtastic.proto.ConfigProtos
 import org.meshtastic.proto.ConfigProtos.Config.DisplayConfig.DeprecatedGpsCoordinateFormat
 import org.meshtastic.proto.MeshProtos.MeshPacket
 import org.meshtastic.proto.Portnums
 
-object ApiUtil {
+object AppUtil {
+
+    private val jsonParser: Json = Json {
+        ignoreUnknownKeys = true
+    }
+
+    fun loadDeviceHardwareList(context: Context): List<DeviceHardware> {
+        return try {
+            val jsonString = context.assets
+                .open("device_hardware.json")
+                .bufferedReader()
+                .use { it.readText() }
+
+            jsonParser
+                .decodeFromString<List<DeviceHardwareDto>>(jsonString)
+                .map { it.toDeviceHardware() }
+
+        } catch (ex: Exception) {
+            errormsg("Error loading device hardware: ${ex.message}")
+            emptyList()
+        }
+    }
+    
+    fun getNodeColorLabel(nodeNum: Int): Pair<Int, Int> {
+        val r = (nodeNum and 0xFF0000) shr 16
+        val g = (nodeNum and 0x00FF00) shr 8
+        val b = nodeNum and 0x0000FF
+
+        val brightness = ((r * 0.299) + (g * 0.587) + (b * 0.114)) / 255
+
+        val background = Color.rgb(r, g, b)
+        val foreground = if (brightness > 0.5) Color.BLACK else Color.WHITE
+
+        return foreground to background
+    }
 
     fun safeGpsFormat(gps: DeprecatedGpsCoordinateFormat): Int {
         return if (gps == DeprecatedGpsCoordinateFormat.UNRECOGNIZED)
@@ -136,5 +177,14 @@ object ApiUtil {
         else -> "unknown_$value"
     }
 
+    fun relayNodePacketLabelColor(confidence: Int): androidx.compose.ui.graphics.Color {
+        val normalized = confidence.coerceIn(0, 100)
 
+        return when (normalized) {
+            in 80..100 -> Quality.GOOD.color
+            in 60..79  -> Quality.FAIR.color
+            in 30..59  -> Quality.BAD.color
+            else       -> Quality.REALLY_BAD.color
+        }
+    }
 }

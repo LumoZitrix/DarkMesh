@@ -24,6 +24,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
 import android.os.Binder
+import android.os.Build
 import android.os.IBinder
 import android.os.RemoteException
 import android.widget.Toast
@@ -40,8 +41,6 @@ import com.geeksville.mesh.MessageStatus
 import com.geeksville.mesh.MyNodeInfo
 import com.geeksville.mesh.NodeInfo
 import com.geeksville.mesh.Position
-import com.geeksville.mesh.SKIP_MQTT_ENTIRELY
-import com.geeksville.mesh.TRACE_MAX_PRIORITY_PREF
 import com.geeksville.mesh.analytics.DataPair
 import com.geeksville.mesh.android.GeeksvilleApplication
 import com.geeksville.mesh.android.Logging
@@ -50,6 +49,8 @@ import com.geeksville.mesh.android.hasLocationPermission
 import com.geeksville.mesh.android.hasNotificationPermission
 import com.geeksville.mesh.android.mainLooperToast
 import com.geeksville.mesh.concurrent.handledLaunch
+import com.geeksville.mesh.database.DbImportState
+import com.geeksville.mesh.database.DbImportState.dbImportContactMap
 import com.geeksville.mesh.database.MeshLogRepository
 import com.geeksville.mesh.database.PacketRepository
 import com.geeksville.mesh.database.entity.MeshLog
@@ -60,11 +61,11 @@ import com.geeksville.mesh.database.entity.ReactionEntity
 import com.geeksville.mesh.model.DeviceVersion
 import com.geeksville.mesh.model.Node
 import com.geeksville.mesh.model.RelayEvent
-import com.geeksville.mesh.model.UIViewModel
 import com.geeksville.mesh.model.UIViewModel.Companion.getPreferences
 import com.geeksville.mesh.model.getTracerouteResponse
 import com.geeksville.mesh.prefs.UserPrefs
 import com.geeksville.mesh.repository.datastore.RadioConfigRepository
+import com.geeksville.mesh.repository.location.LocationEmitPolicy
 import com.geeksville.mesh.repository.location.LocationRepository
 import com.geeksville.mesh.repository.network.MQTTRepository
 import com.geeksville.mesh.repository.radio.RadioInterfaceService
@@ -72,7 +73,9 @@ import com.geeksville.mesh.repository.radio.RadioServiceConnectionState
 import com.geeksville.mesh.service.DistressService.PREF_STRESSTEST_ENABLED
 import com.geeksville.mesh.service.GlobalRadioMesh.autoDeleteMap
 import com.geeksville.mesh.service.GlobalRadioMesh.ourTracerouteRequests
-import com.geeksville.mesh.util.ApiUtil
+import com.geeksville.mesh.ui.SKIP_MQTT_ENTIRELY
+import com.geeksville.mesh.ui.TRACE_MAX_PRIORITY_PREF
+import com.geeksville.mesh.util.AppUtil
 import com.geeksville.mesh.util.anonymize
 import com.geeksville.mesh.util.toOneLineString
 import com.geeksville.mesh.util.toPIIString
@@ -128,7 +131,7 @@ sealed class ServiceAction {
     data class HandleFavoriteNode(val node: Node) : ServiceAction()
     data class SetFavoriteNode(val targetNodeNum: Int, val favNodeNum: Int, val toAdd: Boolean) : ServiceAction()
     data class Reaction(val emoji: String, val replyId: Int, val contactKey: String) : ServiceAction()
-    data class ImportContact(val contact: AdminProtos.SharedContact) : ServiceAction()
+    data class ImportContact(val contact: AdminProtos.SharedContact, val dbImport: Boolean) : ServiceAction()
 }
 
 /**
@@ -286,42 +289,51 @@ class MeshService : Service(), Logging {
      * start our location requests (if they weren't already running)
      */
     private fun startLocationRequests() {
-        // If we're already observing updates, don't register again
-        if (locationFlow?.isActive == true) return
+    // If we're already observing updates, don't register again
+    if (locationFlow?.isActive == true) return
 
-        @SuppressLint("MissingPermission")
-        if (hasLocationPermission()) {
-            locationFlow = locationRepository.getLocations().onEach { location ->
+    @SuppressLint("MissingPermission")
+    if (hasLocationPermission()) {
 
-                val beaconing = getPreferences(this)
-                    .getBoolean(PREF_STRESSTEST_ENABLED, false)
+        val beaconing = getPreferences(this)
+            .getBoolean(PREF_STRESSTEST_ENABLED, false)
 
-                if(DistressService.isLivePosition() || !beaconing){
-                    sendPosition(
-                        position {
-                            latitudeI = Position.degI(location.latitude)
-                            longitudeI = Position.degI(location.longitude)
-                            if (LocationCompat.hasMslAltitude(location)) {
-                                altitude = LocationCompat.getMslAltitudeMeters(location).toInt()
-                            }
-                            altitudeHae = location.altitude.toInt()
-                            time = (location.time / 1000).toInt()
-                            groundSpeed = location.speed.toInt()
-                            groundTrack = location.bearing.toInt()
-                            locationSource = MeshProtos.Position.LocSource.LOC_EXTERNAL
+        // Distress più live: quando livePosition è attivo (o stiamo componendo posizione per chat distress)
+        val policy =
+            if (DistressService.isLivePosition() || (beaconing && DistressService.isSendPositionToChat())) {
+                LocationEmitPolicy.Live
+            } else {
+                LocationEmitPolicy.Default
+            }
+
+        locationFlow = locationRepository.getLocations(policy).onEach { location ->
+
+            if (DistressService.isLivePosition() || !beaconing) {
+                sendPosition(
+                    position {
+                        latitudeI = Position.degI(location.latitude)
+                        longitudeI = Position.degI(location.longitude)
+                        if (LocationCompat.hasMslAltitude(location)) {
+                            altitude = LocationCompat.getMslAltitudeMeters(location).toInt()
                         }
-                    )
-                }
+                        altitudeHae = location.altitude.toInt()
+                        time = (location.time / 1000).toInt()
+                        groundSpeed = location.speed.toInt()
+                        groundTrack = location.bearing.toInt()
+                        locationSource = MeshProtos.Position.LocSource.LOC_EXTERNAL
+                    }
+                )
+            }
 
-                if(beaconing && DistressService.isSendPositionToChat()){
-                    DistressService.setLatitude(location.latitude)
-                    DistressService.setLongitude(location.longitude)
-                    DistressService.setAltitude(location.altitude.toInt())
-                }
+            if (beaconing && DistressService.isSendPositionToChat()) {
+                DistressService.setLatitude(location.latitude)
+                DistressService.setLongitude(location.longitude)
+                DistressService.setAltitude(location.altitude.toInt())
+            }
 
-            }.launchIn(serviceScope)
-        }
+        }.launchIn(serviceScope)
     }
+}
 
     private fun stopLocationRequests(resetPosition: Boolean) {
         if (locationFlow?.isActive == true) {
@@ -470,7 +482,7 @@ class MeshService : Service(), Logging {
                 this,
                 serviceNotifications.notifyId,
                 notification,
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     if (hasLocationPermission()) {
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST
                     } else {
@@ -765,8 +777,7 @@ class MeshService : Service(), Logging {
 
         var priority = MeshPacket.Priority.UNSET
 
-        val beaconing = UIViewModel
-            .getPreferences(this)
+        val beaconing = getPreferences(this)
             .getBoolean(PREF_STRESSTEST_ENABLED, false)
 
         if(beaconing){
@@ -832,24 +843,62 @@ class MeshService : Service(), Logging {
         }
     }
 
-    private fun detectRelayNode(relayNodeLastByte: Int?, packet: MeshPacket, fromUs: Boolean) {
+    private fun detectRelayNode(packet: MeshPacket, fromUs: Boolean, traceResponse:String?) {
 
-        //We prioritize relaynode from packets and if not found, we fallback to hop evaluation
-        if (relayNodeLastByte != null && relayNodeLastByte != 0) {
+        //We prioritize relaynode from direct packets and traceroutes and if not found, we fallback relayNode field
+        if(traceResponse != null){
+            parseLastRespondingTracerouteNode(traceResponse)?.let {
+
+                //this condition occurs when a broken longname is written across
+                //the traceroute response, if this happens we use logic below
+                if(!it.contains("ffff (ffff)")){
+                    radioConfigRepository.emitRelayEvent(
+                        RelayEvent(
+                            nodeLongName = it,
+                            rxRssi = packet.rxRssi,
+                            rxSnr = packet.rxSnr,
+                            confidence = 100,
+                            isTraceroute = true
+                        )
+                    )
+                    //in case of parsing success we stop, otherwise we try logic below
+                    return
+                }
+            }
+        }
+
+        if (!fromUs && packet.hopStart - packet.hopLimit == 0) {
+
             radioConfigRepository.emitRelayEvent(
                 RelayEvent(
-                    relayNodeLastByte = relayNodeLastByte
+                    relayNodeNum = packet.from,
+                    rxRssi = packet.rxRssi,
+                    rxSnr = packet.rxSnr,
+                    isDirect = true,
+                    confidence = 100 //we set confidence to max for direct packets
                 )
             )
-
-        } else if (!fromUs && packet.hopStart - packet.hopLimit <= 0){
-
+        } else if (packet.relayNode != 0) {
             radioConfigRepository.emitRelayEvent(
                 RelayEvent(
-                    relayNodeIdentifier = packet.from
+                    relayNodeLastByte = packet.relayNode,
+                    rxRssi = packet.rxRssi,
+                    rxSnr = packet.rxSnr
                 )
             )
         }
+    }
+
+    private fun parseLastRespondingTracerouteNode(traceResponse: String): String?{
+
+        try {
+            val trace = traceResponse.split("■")
+            return trace[trace.size - 2].split("\n")[0]
+        } catch (e: Exception){
+            debug("Could not determine first responding node! ${e.message}")
+        }
+
+        return null
     }
 
     // Update our model and resend as needed for a MeshPacket we just received from the radio
@@ -859,7 +908,6 @@ class MeshService : Service(), Logging {
             val bytes = data.payload.toByteArray()
             val fromId = toNodeID(packet.from)
             val dataPacket = toDataPacket(packet)
-            val relayNodeLastByte = dataPacket?.relayNode
 
             if (dataPacket != null) {
 
@@ -868,14 +916,13 @@ class MeshService : Service(), Logging {
 
                 debug("Received data from $fromId, portnum=${data.portnum} ${bytes.size} bytes")
 
-                detectRelayNode(relayNodeLastByte, packet, fromUs)
-
                 dataPacket.status = MessageStatus.RECEIVED
 
                 // if (p.hasUser()) handleReceivedUser(fromNum, p.user)
 
                 // We tell other apps about most message types, but some may have sensitive data, so that is not shared'
                 var shouldBroadcast = !fromUs
+                var traceRouteResponse: String? = null
 
                 when (data.portnumValue) {
 
@@ -904,7 +951,7 @@ class MeshService : Service(), Logging {
 
                         } else {
 
-                            val positionPayload = ApiUtil.mergePacketAndPayload(myNodeID, packet)
+                            val positionPayload = AppUtil.mergePacketAndPayload(myNodeID, packet)
 
                             huntHttpService.maybeSendDataJsonAsync(huntingPrefs, positionPayload)
                             handleReceivedPosition(packet.from, u, dataPacket.time)
@@ -918,7 +965,7 @@ class MeshService : Service(), Logging {
                                 if (packet.viaMqtt) longName = "$longName (MQTT)"
                             }
 
-                            val telemetryPayload = ApiUtil.mergePacketAndPayload(myNodeID, packet)
+                            val telemetryPayload = AppUtil.mergePacketAndPayload(myNodeID, packet)
 
                             huntHttpService.maybeSendDataJsonAsync(huntingPrefs, telemetryPayload)
 
@@ -930,7 +977,7 @@ class MeshService : Service(), Logging {
                         val u = TelemetryProtos.Telemetry.parseFrom(data.payload)
                             .copy { if (time == 0) time = (dataPacket.time / 1000L).toInt() }
 
-                        val telemetryPayload = ApiUtil.mergePacketAndPayload(myNodeID, packet)
+                        val telemetryPayload = AppUtil.mergePacketAndPayload(myNodeID, packet)
 
                         if (!fromUs) {
                             huntHttpService.maybeSendDataJsonAsync(huntingPrefs, telemetryPayload)
@@ -985,7 +1032,7 @@ class MeshService : Service(), Logging {
 
                         //val fullTracePayload = packet.buildTracerouteJson(myNodeID) {nodeNum -> getUserName(nodeNum)}
                         //fixme move this logic in #maybeSendDataJsonAsync
-                        val traceroutePayload = ApiUtil.mergePacketAndPayload(myNodeID, packet)
+                        val traceroutePayload = AppUtil.mergePacketAndPayload(myNodeID, packet)
 
                         huntHttpService.maybeSendDataJsonAsync(huntingPrefs, traceroutePayload)
 
@@ -994,21 +1041,23 @@ class MeshService : Service(), Logging {
                         if(!huntingPrefs.getBoolean(UserPrefs.Hunting.BACKGROUND_HUNT, false)){
                             val requestId = packet.decoded.requestId
                             val start = tracerouteStartTimes.remove(requestId)
-                            var response = packet.getTracerouteResponse(::getUserName)
+                            traceRouteResponse = packet.getTracerouteResponse(::getUserName)
 
-                            if (response != null && start != null) {
+                            if (traceRouteResponse != null && start != null) {
                                 val elapsedMs = System.currentTimeMillis() - start.toLong()
                                 val seconds = elapsedMs / 1000.0
 
-                                response += "\n\nDuration: ${"%.1f".format(seconds)} s"
+                                traceRouteResponse += "\n\nDuration: ${"%.1f".format(seconds)} s"
                             }
 
-                            radioConfigRepository.setTracerouteResponse(response)
+                            radioConfigRepository.setTracerouteResponse(traceRouteResponse)
                         }
                     }
 
                     else -> debug("No custom processing needed for ${data.portnumValue}")
                 }
+
+                detectRelayNode(packet, fromUs, traceRouteResponse)
 
                 // We always tell other apps when new data packets arrive
                 if (shouldBroadcast) {
@@ -1082,7 +1131,7 @@ class MeshService : Service(), Logging {
     }
 
     // Update our DB of users based on someone sending out a User subpacket
-    private fun handleReceivedUser(fromNum: Int, p: MeshProtos.User, channel: Int = 0) {
+    private fun handleReceivedUser(fromNum: Int, p: MeshProtos.User, channel: Int = 0, dbImport: Boolean = false) {
         updateNodeInfo(fromNum) {
             val newNode = (it.isUnknownUser && p.hwModel != MeshProtos.HardwareModel.UNSET)
 
@@ -1094,8 +1143,12 @@ class MeshService : Service(), Logging {
             it.longName = p.longName
             it.shortName = p.shortName
             it.channel = channel
-            if (newNode) {
+
+            if(dbImport || newNode){
                 it.isFavorite = false
+            }
+
+            if (newNode && !dbImport) {
                 serviceNotifications.showNewNodeSeenNotification(it)
             }
         }
@@ -1380,20 +1433,30 @@ class MeshService : Service(), Logging {
                             }
                         } ?: run {
 
+                            //todo fixme, do it more efficiently
                             val requestId = packet.decoded.requestId
-                            val deletedNode = autoDeleteMap[requestId]
                             val ourTraceRequest = ourTracerouteRequests[requestId]
 
-                            if (deletedNode != null){
+                            val processedContact = dbImportContactMap.remove(requestId)
+                            val deletedNode = autoDeleteMap.remove(requestId)
+
+                            if (DbImportState.importInProgress()){
+
+                                if(processedContact != null){
+                                    DbImportState.emitImportProgress(processedContact)
+                                    //mainLooperToast("Importing $importedContact", Toast.LENGTH_SHORT)
+                                    debug("ACK is related to recent imported node $processedContact")
+                                }
+
+                            } else if (deletedNode != null) {
                                 mainLooperToast("Purged $deletedNode", Toast.LENGTH_SHORT)
-                                autoDeleteMap.remove(requestId)
 
                             } else if (ourTraceRequest != null) {
-                                mainLooperToast("Traceroute to " +
-                                        "${getUserShortName(ourTraceRequest)} traveling...",
+                                mainLooperToast(
+                                    "Traceroute to " +
+                                            "${getUserShortName(ourTraceRequest)} traveling...",
                                     Toast.LENGTH_SHORT
                                 )
-
                             } else {
                                 mainLooperToast("Message traveling...", Toast.LENGTH_SHORT)
                             }
@@ -1678,9 +1741,9 @@ class MeshService : Service(), Logging {
 
             try {
                 //we want to try this and in case of failure, continue
-                if(advancedPrefs.getBoolean(SKIP_MQTT_ENTIRELY, false)
-                    && proto.packet.hasDecoded()
-                    && proto.packet.viaMqtt){
+                if(advancedPrefs.getBoolean(SKIP_MQTT_ENTIRELY, false) &&
+                    (proto.packet.viaMqtt || proto.packet.transportMechanism == MeshPacket.TransportMechanism.TRANSPORT_MQTT)){
+
                     debug("Skipping MQTT packet since $SKIP_MQTT_ENTIRELY prefs are set to true")
                     return
                 }
@@ -2129,7 +2192,7 @@ class MeshService : Service(), Logging {
             is ServiceAction.HandleFavoriteNode -> handleFavorite(action.node)
             is ServiceAction.SetFavoriteNode ->
                 setFavorite(action.targetNodeNum, action.favNodeNum, action.toAdd)
-            is ServiceAction.ImportContact -> handleImportContact(action)
+            is ServiceAction.ImportContact -> handleImportContact(action, action.dbImport)
         }
     }
 
@@ -2154,13 +2217,19 @@ class MeshService : Service(), Logging {
         }
     }
 
-    private fun handleImportContact(action: ServiceAction.ImportContact){
+    private fun handleImportContact(action: ServiceAction.ImportContact, dbImport: Boolean){
         val contact = action.contact
-        sendToRadio(newMeshPacketTo(myNodeNum).buildAdminPacket {
+        val packet = newMeshPacketTo(myNodeNum).buildAdminPacket {
             debug("setting sharedcontact to $myNodeNum")
             addContact = contact
-        })
-        handleReceivedUser(contact.nodeNum, contact.user)
+        }
+
+        if(dbImport){
+            dbImportContactMap[packet.id] = contact.user.longName
+        }
+
+        sendToRadio(packet)
+        handleReceivedUser(contact.nodeNum, contact.user, 0, dbImport)
     }
 
     fun setFavorite(targetNodeNum: Int, favNodeNum: Int, toAdd: Boolean) = toRemoteExceptions {
@@ -2172,6 +2241,10 @@ class MeshService : Service(), Logging {
                 removeFavoriteNode = favNodeNum
             }
         })
+    }
+
+    fun clearQueue(){
+        queuedPackets.clear()
     }
 
     private fun handleFavorite(node: Node) = toRemoteExceptions {
@@ -2247,6 +2320,10 @@ class MeshService : Service(), Logging {
         override fun getMyId() = toRemoteExceptions { myNodeID }
 
         override fun getPacketId() = toRemoteExceptions { generatePacketId() }
+
+        override fun clearPacketQueue(){
+            clearQueue()
+        }
 
         override fun setOwner(user: MeshUser) = toRemoteExceptions {
             setOwner(generatePacketId(), user {
@@ -2527,9 +2604,9 @@ class MeshService : Service(), Logging {
             })
         }
 
-        override fun requestNodedbReset(requestId: Int, destNum: Int) = toRemoteExceptions {
+        override fun requestNodedbReset(requestId: Int, destNum: Int, preserveFavorites: Boolean) = toRemoteExceptions {
             sendToRadio(newMeshPacketTo(destNum).buildAdminPacket(id = requestId) {
-                nodedbReset = true
+                nodedbReset = preserveFavorites
             })
         }
     }
